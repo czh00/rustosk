@@ -1,0 +1,28 @@
+    Checking rustosk v0.1.0 (C:\Users\1\OneDrive\czh\osk\rust\src-tauri)
+error[E0432]: unresolved imports `windows::Win32::UI::Accessibility::EVENT_SYSTEM_FOREGROUND`, `windows::Win32::UI::Accessibility::WINEVENT_OUTOFCONTEXT`, `windows::Win32::UI::Accessibility::EVENT_OBJECT_FOCUS`
+  --> src\system\input_detector.rs:10:37
+   |
+10 |     SetWinEventHook, HWINEVENTHOOK, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^ no `WINEVENT_OUTOFCONTEXT` in `Win32::UI::Accessibility`
+   |                                     |
+   |                                     no `EVENT_SYSTEM_FOREGROUND` in `Win32::UI::Accessibility`
+11 |     EVENT_OBJECT_FOCUS,
+   |     ^^^^^^^^^^^^^^^^^^ no `EVENT_OBJECT_FOCUS` in `Win32::UI::Accessibility`
+
+warning: unused import: `Manager`
+ --> src\system\window_manager.rs:1:13
+  |
+1 | use tauri::{Manager, WebviewWindow};
+  |             ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Manager`
+ --> src\system\input_detector.rs:2:13
+  |
+2 | use tauri::{Manager, WebviewWindow};
+  |             ^^^^^^^
+
+For more information about this error, try `rustc --explain E0432`.
+warning: `rustosk` (lib) generated 2 warnings
+error: could not compile `rustosk` (lib) due to 1 previous error; 2 warnings emitted

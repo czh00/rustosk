@@ -1,0 +1,338 @@
+    Checking rustosk v0.7.6 (C:\Users\1\OneDrive\czh\osk\rust\src-tauri)
+warning: unused imports: `HWND_TOPMOST` and `WS_EX_TOPMOST`
+ --> src\system\window_manager.rs:5:84
+  |
+5 |     GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWLP_WNDPROC, HWND_TOPMOST,
+  |                                                                                    ^^^^^^^^^^^^
+6 |     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+7 |     WS_EX_TOPMOST, WM_MOUSEACTIVATE, MA_NOACTIVATE, CallWindowProcW, ShowWindow, SW_SHOWNOACTIVATE,
+  |     ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0277]: `dyn FnOnce(&mut App) -> Result<(), Box<dyn Error>> + Send` cannot be shared between threads safely
+   --> src\lib.rs:61:37
+    |
+ 61 |                   .on_tray_icon_event(|_tray, event| {
+    |  __________________------------------_^
+    | |                  |
+    | |                  required by a bound introduced by this call
+ 62 | |                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+ 63 | |                         let is_visible = system::window_manager::is_osk_visible();
+ 64 | |                         if is_visible {
+...   |
+ 79 | |                 })
+    | |_________________^ `dyn FnOnce(&mut App) -> Result<(), Box<dyn Error>> + Send` cannot be shared between threads safely
+    |
+    = help: the trait `Sync` is not implemented for `dyn FnOnce(&mut App) -> Result<(), Box<dyn Error>> + Send`
+    = note: required for `Unique<dyn FnOnce(&mut App) -> Result<(), Box<dyn Error>> + Send>` to implement `Sync`
+note: required because it appears within the type `Box<dyn FnOnce(&mut App) -> Result<(), Box<dyn Error>> + Send>`
+   --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\alloc\src\boxed.rs:234:12
+    |
+234 | pub struct Box<
+    |            ^^^
+note: required because it appears within the type `Option<Box<dyn FnOnce(&mut App) -> Result<(), Box<dyn Error>> + Send>>`
+   --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\option.rs:600:10
+    |
+600 | pub enum Option<T> {
+    |          ^^^^^^
+note: required because it appears within the type `tauri::App`
+   --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\app.rs:665:12
+    |
+665 | pub struct App<R: Runtime> {
+    |            ^^^
+    = note: required because it appears within the type `&tauri::App`
+note: required because it's used within this closure
+   --> src\lib.rs:61:37
+    |
+ 61 |                 .on_tray_icon_event(|_tray, event| {
+    |                                     ^^^^^^^^^^^^^^
+note: required by a bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+   --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\tray\mod.rs:337:66
+    |
+337 |   pub fn on_tray_icon_event<F: Fn(&TrayIcon<R>, TrayIconEvent) + Sync + Send + 'static>(
+    |                                                                  ^^^^ required by this bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+    = note: the full name for the type has been written to 'C:\Users\1\OneDrive\czh\osk\rust\src-tauri\target\debug\deps\rustosk_lib-da6c6772dfc384aa.long-type-4468535893830477129.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: `*mut ()` cannot be shared between threads safely
+    --> src\lib.rs:61:37
+     |
+  61 |                   .on_tray_icon_event(|_tray, event| {
+     |                    ------------------ ^-------------
+     |                    |                  |
+     |  __________________|__________________within this `{closure@src\lib.rs:61:37: 61:51}`
+     | |                  |
+     | |                  required by a bound introduced by this call
+  62 | |                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+  63 | |                         let is_visible = system::window_manager::is_osk_visible();
+  64 | |                         if is_visible {
+...    |
+  79 | |                 })
+     | |_________________^ `*mut ()` cannot be shared between threads safely
+     |
+     = help: within `{closure@src\lib.rs:61:37: 61:51}`, the trait `Sync` is not implemented for `*mut ()`
+note: required because it appears within the type `PhantomData<*mut ()>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\marker.rs:819:12
+     |
+ 819 | pub struct PhantomData<T: PointeeSized>;
+     |            ^^^^^^^^^^^
+note: required because it appears within the type `tao::event_loop::EventLoop<tauri_runtime_wry::Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\event_loop.rs:40:12
+     |
+  40 | pub struct EventLoop<T: 'static> {
+     |            ^^^^^^^^^
+note: required because it appears within the type `tauri_runtime_wry::Wry<EventLoopMessage>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-runtime-wry-2.10.1\src\lib.rs:2530:12
+     |
+2530 | pub struct Wry<T: UserEvent> {
+     |            ^^^
+note: required because it appears within the type `Option<tauri_runtime_wry::Wry<EventLoopMessage>>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\option.rs:600:10
+     |
+ 600 | pub enum Option<T> {
+     |          ^^^^^^
+note: required because it appears within the type `tauri::App`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\app.rs:665:12
+     |
+ 665 | pub struct App<R: Runtime> {
+     |            ^^^
+     = note: required because it appears within the type `&tauri::App`
+note: required because it's used within this closure
+    --> src\lib.rs:61:37
+     |
+  61 |                 .on_tray_icon_event(|_tray, event| {
+     |                                     ^^^^^^^^^^^^^^
+note: required by a bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\tray\mod.rs:337:66
+     |
+ 337 |   pub fn on_tray_icon_event<F: Fn(&TrayIcon<R>, TrayIconEvent) + Sync + Send + 'static>(
+     |                                                                  ^^^^ required by this bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+
+error[E0277]: `Rc<EventLoopRunner<Message<EventLoopMessage>>>` cannot be shared between threads safely
+    --> src\lib.rs:61:37
+     |
+  61 |                   .on_tray_icon_event(|_tray, event| {
+     |                    ------------------ ^-------------
+     |                    |                  |
+     |  __________________|__________________within this `{closure@src\lib.rs:61:37: 61:51}`
+     | |                  |
+     | |                  required by a bound introduced by this call
+  62 | |                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+  63 | |                         let is_visible = system::window_manager::is_osk_visible();
+  64 | |                         if is_visible {
+...    |
+  79 | |                 })
+     | |_________________^ `Rc<EventLoopRunner<Message<EventLoopMessage>>>` cannot be shared between threads safely
+     |
+     = help: within `{closure@src\lib.rs:61:37: 61:51}`, the trait `Sync` is not implemented for `Rc<EventLoopRunner<Message<EventLoopMessage>>>`
+note: required because it appears within the type `EventLoopWindowTarget<Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\platform_impl\windows\event_loop.rs:169:12
+     |
+ 169 | pub struct EventLoopWindowTarget<T: 'static> {
+     |            ^^^^^^^^^^^^^^^^^^^^^
+note: required because it appears within the type `tao::event_loop::EventLoopWindowTarget<tauri_runtime_wry::Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\event_loop.rs:52:12
+     |
+  52 | pub struct EventLoopWindowTarget<T: 'static> {
+     |            ^^^^^^^^^^^^^^^^^^^^^
+note: required because it appears within the type `EventLoop<Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\platform_impl\windows\event_loop.rs:144:12
+     |
+ 144 | pub struct EventLoop<T: 'static> {
+     |            ^^^^^^^^^
+note: required because it appears within the type `tao::event_loop::EventLoop<tauri_runtime_wry::Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\event_loop.rs:40:12
+     |
+  40 | pub struct EventLoop<T: 'static> {
+     |            ^^^^^^^^^
+note: required because it appears within the type `tauri_runtime_wry::Wry<EventLoopMessage>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-runtime-wry-2.10.1\src\lib.rs:2530:12
+     |
+2530 | pub struct Wry<T: UserEvent> {
+     |            ^^^
+note: required because it appears within the type `Option<tauri_runtime_wry::Wry<EventLoopMessage>>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\option.rs:600:10
+     |
+ 600 | pub enum Option<T> {
+     |          ^^^^^^
+note: required because it appears within the type `tauri::App`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\app.rs:665:12
+     |
+ 665 | pub struct App<R: Runtime> {
+     |            ^^^
+     = note: required because it appears within the type `&tauri::App`
+note: required because it's used within this closure
+    --> src\lib.rs:61:37
+     |
+  61 |                 .on_tray_icon_event(|_tray, event| {
+     |                                     ^^^^^^^^^^^^^^
+note: required by a bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\tray\mod.rs:337:66
+     |
+ 337 |   pub fn on_tray_icon_event<F: Fn(&TrayIcon<R>, TrayIconEvent) + Sync + Send + 'static>(
+     |                                                                  ^^^^ required by this bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+     = note: the full name for the type has been written to 'C:\Users\1\OneDrive\czh\osk\rust\src-tauri\target\debug\deps\rustosk_lib-da6c6772dfc384aa.long-type-5444256384715314660.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: `*mut c_void` cannot be shared between threads safely
+    --> src\lib.rs:61:37
+     |
+  61 |                   .on_tray_icon_event(|_tray, event| {
+     |                    ------------------ ^-------------
+     |                    |                  |
+     |  __________________|__________________within this `{closure@src\lib.rs:61:37: 61:51}`
+     | |                  |
+     | |                  required by a bound introduced by this call
+  62 | |                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+  63 | |                         let is_visible = system::window_manager::is_osk_visible();
+  64 | |                         if is_visible {
+...    |
+  79 | |                 })
+     | |_________________^ `*mut c_void` cannot be shared between threads safely
+     |
+     = help: within `{closure@src\lib.rs:61:37: 61:51}`, the trait `Sync` is not implemented for `*mut c_void`
+note: required because it appears within the type `windows::Win32::Foundation::HWND`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-0.61.3\src\Windows\Win32\Foundation\mod.rs:5670:12
+     |
+5670 | pub struct HWND(pub *mut core::ffi::c_void);
+     |            ^^^^
+note: required because it appears within the type `EventLoopWindowTarget<Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\platform_impl\windows\event_loop.rs:169:12
+     |
+ 169 | pub struct EventLoopWindowTarget<T: 'static> {
+     |            ^^^^^^^^^^^^^^^^^^^^^
+note: required because it appears within the type `tao::event_loop::EventLoopWindowTarget<tauri_runtime_wry::Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\event_loop.rs:52:12
+     |
+  52 | pub struct EventLoopWindowTarget<T: 'static> {
+     |            ^^^^^^^^^^^^^^^^^^^^^
+note: required because it appears within the type `EventLoop<Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\platform_impl\windows\event_loop.rs:144:12
+     |
+ 144 | pub struct EventLoop<T: 'static> {
+     |            ^^^^^^^^^
+note: required because it appears within the type `tao::event_loop::EventLoop<tauri_runtime_wry::Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\event_loop.rs:40:12
+     |
+  40 | pub struct EventLoop<T: 'static> {
+     |            ^^^^^^^^^
+note: required because it appears within the type `tauri_runtime_wry::Wry<EventLoopMessage>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-runtime-wry-2.10.1\src\lib.rs:2530:12
+     |
+2530 | pub struct Wry<T: UserEvent> {
+     |            ^^^
+note: required because it appears within the type `Option<tauri_runtime_wry::Wry<EventLoopMessage>>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\option.rs:600:10
+     |
+ 600 | pub enum Option<T> {
+     |          ^^^^^^
+note: required because it appears within the type `tauri::App`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\app.rs:665:12
+     |
+ 665 | pub struct App<R: Runtime> {
+     |            ^^^
+     = note: required because it appears within the type `&tauri::App`
+note: required because it's used within this closure
+    --> src\lib.rs:61:37
+     |
+  61 |                 .on_tray_icon_event(|_tray, event| {
+     |                                     ^^^^^^^^^^^^^^
+note: required by a bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\tray\mod.rs:337:66
+     |
+ 337 |   pub fn on_tray_icon_event<F: Fn(&TrayIcon<R>, TrayIconEvent) + Sync + Send + 'static>(
+     |                                                                  ^^^^ required by this bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+     = note: the full name for the type has been written to 'C:\Users\1\OneDrive\czh\osk\rust\src-tauri\target\debug\deps\rustosk_lib-da6c6772dfc384aa.long-type-1287353541015236571.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: `(dyn FnMut(*const c_void) -> bool + 'static)` cannot be shared between threads safely
+    --> src\lib.rs:61:37
+     |
+  61 |                   .on_tray_icon_event(|_tray, event| {
+     |  __________________------------------_^
+     | |                  |
+     | |                  required by a bound introduced by this call
+  62 | |                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+  63 | |                         let is_visible = system::window_manager::is_osk_visible();
+  64 | |                         if is_visible {
+...    |
+  79 | |                 })
+     | |_________________^ `(dyn FnMut(*const c_void) -> bool + 'static)` cannot be shared between threads safely
+     |
+     = help: the trait `Sync` is not implemented for `(dyn FnMut(*const c_void) -> bool + 'static)`
+     = note: required for `Unique<(dyn FnMut(*const c_void) -> bool + 'static)>` to implement `Sync`
+note: required because it appears within the type `Box<(dyn FnMut(*const c_void) -> bool + 'static)>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\alloc\src\boxed.rs:234:12
+     |
+ 234 | pub struct Box<
+     |            ^^^
+note: required because it appears within the type `Option<Box<(dyn FnMut(*const c_void) -> bool + 'static)>>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\option.rs:600:10
+     |
+ 600 | pub enum Option<T> {
+     |          ^^^^^^
+note: required because it appears within the type `EventLoop<Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\platform_impl\windows\event_loop.rs:144:12
+     |
+ 144 | pub struct EventLoop<T: 'static> {
+     |            ^^^^^^^^^
+note: required because it appears within the type `tao::event_loop::EventLoop<tauri_runtime_wry::Message<EventLoopMessage>>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tao-0.34.8\src\event_loop.rs:40:12
+     |
+  40 | pub struct EventLoop<T: 'static> {
+     |            ^^^^^^^^^
+note: required because it appears within the type `tauri_runtime_wry::Wry<EventLoopMessage>`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-runtime-wry-2.10.1\src\lib.rs:2530:12
+     |
+2530 | pub struct Wry<T: UserEvent> {
+     |            ^^^
+note: required because it appears within the type `Option<tauri_runtime_wry::Wry<EventLoopMessage>>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\option.rs:600:10
+     |
+ 600 | pub enum Option<T> {
+     |          ^^^^^^
+note: required because it appears within the type `tauri::App`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\app.rs:665:12
+     |
+ 665 | pub struct App<R: Runtime> {
+     |            ^^^
+     = note: required because it appears within the type `&tauri::App`
+note: required because it's used within this closure
+    --> src\lib.rs:61:37
+     |
+  61 |                 .on_tray_icon_event(|_tray, event| {
+     |                                     ^^^^^^^^^^^^^^
+note: required by a bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+    --> C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\tray\mod.rs:337:66
+     |
+ 337 |   pub fn on_tray_icon_event<F: Fn(&TrayIcon<R>, TrayIconEvent) + Sync + Send + 'static>(
+     |                                                                  ^^^^ required by this bound in `TrayIconBuilder::<R>::on_tray_icon_event`
+     = note: the full name for the type has been written to 'C:\Users\1\OneDrive\czh\osk\rust\src-tauri\target\debug\deps\rustosk_lib-da6c6772dfc384aa.long-type-9634139193622312283.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+help: use parentheses to call this trait object
+     |
+  61 ~                 .on_tray_icon_event((|_tray, event| {
+  62 +                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+  63 +                         let is_visible = system::window_manager::is_osk_visible();
+  64 +                         if is_visible {
+  65 ~                             // ?嗅??＊蝷?-> ???梯?
+  66 +                             system::window_manager::set_manually_hidden(true);
+  67 +                             if let Some(window) = app.get_webview_window("main") {
+  68 +                                 let _ = window.emit("backend_pin_updated", false);
+  69 +                             }
+  70 +                         } else {
+  71 ~                             // ?嗅??梯? -> 撘瑕憿舐內嚗??日??銝阡?閮剖???隞亙??芸???憭梧?
+  72 +                             system::window_manager::set_manually_hidden(false);
+  73 +                             system::window_manager::set_pinned(true);
+  74 +                             if let Some(window) = app.get_webview_window("main") {
+  75 +                                 let _ = window.emit("backend_pin_updated", true);
+  76 +                             }
+  77 +                         }
+  78 +                     }
+  79 ~                 })(/* *const c_void */))
+     |
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `rustosk` (lib) generated 1 warning
+error: could not compile `rustosk` (lib) due to 5 previous errors; 1 warning emitted

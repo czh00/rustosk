@@ -1,0 +1,111 @@
+    Checking rustosk v0.5.7 (C:\Users\1\OneDrive\czh\osk\rust\src-tauri)
+warning: unused import: `std::sync::atomic::Ordering`
+ --> src\lib.rs:7:5
+  |
+7 | use std::sync::atomic::Ordering;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0277]: can't compare `i32` with `UIA_CONTROLTYPE_ID`
+    --> src\system\input_detector.rs:107:36
+     |
+ 107 |                     if ctrl_type.0 == UIA_EditControlTypeId || 
+     |                                    ^^ no implementation for `i32 == UIA_CONTROLTYPE_ID`
+     |
+     = help: the trait `PartialEq<UIA_CONTROLTYPE_ID>` is not implemented for `i32`
+help: the following other types implement trait `PartialEq<Rhs>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\cmp.rs:1868:13
+     |
+1868 |               impl const PartialEq for $t {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `i32` implements `PartialEq`
+...
+1890 | /     partial_eq_impl! {
+1891 | |         bool char usize u8 u16 u32 u64 u128 isize i8 i16 i32 i64 i128 f16 f32 f64 f128
+1892 | |     }
+     | |_____- in this macro invocation
+     |
+    ::: C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde_json-1.0.149\src\value\partial_eq.rs:76:13
+     |
+  76 |               impl PartialEq<Value> for $ty {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `i32` implements `PartialEq<serde_json::value::Value>`
+...
+  97 | / partialeq_numeric! {
+  98 | |     eq_i64[i8 i16 i32 i64 isize]
+  99 | |     eq_u64[u8 u16 u32 u64 usize]
+ 100 | |     eq_f32[f32]
+ 101 | |     eq_f64[f64]
+ 102 | |     eq_bool[bool]
+ 103 | | }
+     | |_- in this macro invocation
+     = note: this error originates in the macro `partial_eq_impl` which comes from the expansion of the macro `partialeq_numeric` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: can't compare `i32` with `UIA_CONTROLTYPE_ID`
+    --> src\system\input_detector.rs:108:36
+     |
+ 108 |                        ctrl_type.0 == UIA_DocumentControlTypeId || 
+     |                                    ^^ no implementation for `i32 == UIA_CONTROLTYPE_ID`
+     |
+     = help: the trait `PartialEq<UIA_CONTROLTYPE_ID>` is not implemented for `i32`
+help: the following other types implement trait `PartialEq<Rhs>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\cmp.rs:1868:13
+     |
+1868 |               impl const PartialEq for $t {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `i32` implements `PartialEq`
+...
+1890 | /     partial_eq_impl! {
+1891 | |         bool char usize u8 u16 u32 u64 u128 isize i8 i16 i32 i64 i128 f16 f32 f64 f128
+1892 | |     }
+     | |_____- in this macro invocation
+     |
+    ::: C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde_json-1.0.149\src\value\partial_eq.rs:76:13
+     |
+  76 |               impl PartialEq<Value> for $ty {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `i32` implements `PartialEq<serde_json::value::Value>`
+...
+  97 | / partialeq_numeric! {
+  98 | |     eq_i64[i8 i16 i32 i64 isize]
+  99 | |     eq_u64[u8 u16 u32 u64 usize]
+ 100 | |     eq_f32[f32]
+ 101 | |     eq_f64[f64]
+ 102 | |     eq_bool[bool]
+ 103 | | }
+     | |_- in this macro invocation
+     = note: this error originates in the macro `partial_eq_impl` which comes from the expansion of the macro `partialeq_numeric` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: can't compare `i32` with `UIA_CONTROLTYPE_ID`
+    --> src\system\input_detector.rs:109:36
+     |
+ 109 |                        ctrl_type.0 == UIA_ComboBoxControlTypeId {
+     |                                    ^^ no implementation for `i32 == UIA_CONTROLTYPE_ID`
+     |
+     = help: the trait `PartialEq<UIA_CONTROLTYPE_ID>` is not implemented for `i32`
+help: the following other types implement trait `PartialEq<Rhs>`
+    --> C:\Users\1\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\cmp.rs:1868:13
+     |
+1868 |               impl const PartialEq for $t {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `i32` implements `PartialEq`
+...
+1890 | /     partial_eq_impl! {
+1891 | |         bool char usize u8 u16 u32 u64 u128 isize i8 i16 i32 i64 i128 f16 f32 f64 f128
+1892 | |     }
+     | |_____- in this macro invocation
+     |
+    ::: C:\Users\1\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde_json-1.0.149\src\value\partial_eq.rs:76:13
+     |
+  76 |               impl PartialEq<Value> for $ty {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `i32` implements `PartialEq<serde_json::value::Value>`
+...
+  97 | / partialeq_numeric! {
+  98 | |     eq_i64[i8 i16 i32 i64 isize]
+  99 | |     eq_u64[u8 u16 u32 u64 usize]
+ 100 | |     eq_f32[f32]
+ 101 | |     eq_f64[f64]
+ 102 | |     eq_bool[bool]
+ 103 | | }
+     | |_- in this macro invocation
+     = note: this error originates in the macro `partial_eq_impl` which comes from the expansion of the macro `partialeq_numeric` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `rustosk` (lib) generated 1 warning
+error: could not compile `rustosk` (lib) due to 3 previous errors; 1 warning emitted

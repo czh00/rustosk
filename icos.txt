@@ -1,0 +1,4 @@
+C:\Users\1\OneDrive\czh\osk\rust\src-tauri\icons\icon.ico - 92390
+C:\Users\1\OneDrive\czh\osk\rust\src-tauri\target\debug\resources\icon.ico - 92390
+C:\Users\1\OneDrive\czh\osk\rust\src-tauri\target\release\resources\icon.ico - 86642
+C:\Users\1\OneDrive\czh\osk\src\Assets\app.ico - 92390
