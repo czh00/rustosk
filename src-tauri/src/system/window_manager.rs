@@ -1,14 +1,16 @@
 use std::sync::atomic::{AtomicIsize, AtomicBool, Ordering};
-use tauri::{WebviewWindow, LogicalSize, Size, PhysicalPosition, Position};
+use tauri::{WebviewWindow, LogicalSize, Size, PhysicalPosition, Position, Emitter};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWLP_WNDPROC, HWND_TOPMOST,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WM_MOUSEACTIVATE, MA_NOACTIVATE, CallWindowProcW, ShowWindow, SW_SHOWNOACTIVATE,
-    SW_SHOWNORMAL, SW_HIDE, IsWindowVisible, WM_NCHITTEST, WM_SIZING,
+    SW_SHOWNORMAL, SW_HIDE, IsWindowVisible, WM_NCHITTEST, WM_SIZING, FindWindowW,
     HTLEFT, HTRIGHT, HTTOP, HTBOTTOM, HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT, 
     WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT, WMSZ_TOPRIGHT, WMSZ_BOTTOM, WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT
 };
+use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+const WM_EXITSIZEMOVE: u32 = 0x0232;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::core::PCWSTR;
 use crate::system::input_detector::update_osk_state;
@@ -25,7 +27,22 @@ pub static IS_DYNAMIC_DISPLAY: AtomicBool = AtomicBool::new(false);
 static TARGET_ASPECT_RATIO: AtomicU64 = AtomicU64::new(0); // Bits of f64
 
 #[tauri::command]
-pub fn open_sos() {
+pub fn open_sos(window: WebviewWindow) {
+    let original_pinned = IS_PINNED.load(Ordering::Relaxed);
+    
+    // 1. 設定鎖定模式與隱藏本體
+    IS_PINNED.store(true, Ordering::Relaxed);
+    IS_MANUALLY_HIDDEN.store(true, Ordering::Relaxed);
+    
+    // 2. 同步 UI 事件
+    let _ = window.emit("backend_pin_updated", true);
+    
+    // 3. 執行隱藏並觸發顯示偵測
+    std::thread::spawn(|| {
+        update_osk_state();
+    });
+
+    // 4. 啟動系統 osk.exe
     unsafe {
         let path: Vec<u16> = "osk.exe\0".encode_utf16().collect();
         let operation: Vec<u16> = "open\0".encode_utf16().collect();
@@ -38,6 +55,35 @@ pub fn open_sos() {
             SW_SHOWNORMAL,
         );
     }
+
+    // 5. 啟動背景執行緒監控 osk.exe
+    std::thread::spawn(move || {
+        // 等待一下確保 osk.exe 視窗有機會出現
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        
+        let class_name: Vec<u16> = "OSKMainClass\0".encode_utf16().collect();
+        
+        // 輪詢直到 OSK 視窗消失
+        loop {
+            let hwnd = unsafe { 
+                FindWindowW(
+                    PCWSTR(class_name.as_ptr()), 
+                    PCWSTR(std::ptr::null())
+                ) 
+            }.unwrap_or(HWND::default());
+            
+            if hwnd.0.is_null() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+        
+        // 恢復原始狀態
+        IS_MANUALLY_HIDDEN.store(false, Ordering::Relaxed);
+        IS_PINNED.store(original_pinned, Ordering::Relaxed);
+        let _ = window.emit("backend_pin_updated", original_pinned);
+        update_osk_state();
+    });
 }
 
 #[tauri::command]
@@ -238,6 +284,10 @@ unsafe extern "system" fn osk_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         }
     }
     
+    if msg == WM_EXITSIZEMOVE {
+        keep_hwnd_in_screen(hwnd);
+    }
+    
     let prev_proc = PREV_WNDPROC.load(Ordering::Relaxed);
     if prev_proc != 0 {
         return CallWindowProcW(std::mem::transmute(prev_proc), hwnd, msg, wparam, lparam);
@@ -295,7 +345,11 @@ pub fn resize_and_recenter(window: WebviewWindow, width: f64, height: f64, force
                 x: x as i32,
                 y: y as i32,
             }));
+            // Initial boundary check
+            let _ = keep_window_in_screen(&window);
         }
+    } else {
+        let _ = keep_window_in_screen(&window);
     }
     Ok(())
 }
@@ -335,6 +389,7 @@ pub fn apply_relative_pos(window: WebviewWindow, rx: f64, ry: f64) -> Result<(),
         let x = origin.x + (rx * size.width as f64) as i32;
         let y = origin.y + (ry * size.height as f64) as i32;
         let _ = window.set_position(Position::Physical(PhysicalPosition { x, y }));
+        let _ = keep_window_in_screen(&window);
     }
     Ok(())
 }
@@ -343,5 +398,84 @@ pub fn update_aspect_ratio(width: f64, height: f64) {
     if height > 0.0 {
         let ratio = width / height;
         TARGET_ASPECT_RATIO.store(ratio.to_bits(), Ordering::Relaxed);
+    }
+}
+
+pub fn keep_window_in_screen(window: &WebviewWindow) -> Result<(), String> {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .ok_or("No monitor found")?;
+
+    let monitor_pos = monitor.position();
+    let monitor_size = monitor.size();
+    
+    let window_pos = window.outer_position().map_err(|e| e.to_string())?;
+    let window_size = window.outer_size().map_err(|e| e.to_string())?;
+    
+    let mut new_x = window_pos.x;
+    let mut new_y = window_pos.y;
+    
+    let screen_right = monitor_pos.x + monitor_size.width as i32;
+    let screen_bottom = monitor_pos.y + monitor_size.height as i32;
+    
+    if new_x < monitor_pos.x {
+        new_x = monitor_pos.x;
+    }
+    if new_y < monitor_pos.y {
+        new_y = monitor_pos.y;
+    }
+    if (new_x + window_size.width as i32) > screen_right {
+        new_x = screen_right - window_size.width as i32;
+    }
+    if (new_y + window_size.height as i32) > screen_bottom {
+        new_y = screen_bottom - window_size.height as i32;
+    }
+    
+    if new_x != window_pos.x || new_y != window_pos.y {
+        let _ = window.set_position(Position::Physical(PhysicalPosition { x: new_x, y: new_y }));
+    }
+    
+    Ok(())
+}
+
+fn keep_hwnd_in_screen(hwnd: HWND) {
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info).as_bool() {
+            let mut rect = RECT::default();
+            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect);
+            
+            let win_width = rect.right - rect.left;
+            let win_height = rect.bottom - rect.top;
+            
+            let mut new_x = rect.left;
+            let mut new_y = rect.top;
+            
+            let monitor_rect = info.rcWork;
+            
+            if new_x < monitor_rect.left { new_x = monitor_rect.left; }
+            if new_y < monitor_rect.top { new_y = monitor_rect.top; }
+            if (new_x + win_width) > monitor_rect.right { new_x = monitor_rect.right - win_width; }
+            if (new_y + win_height) > monitor_rect.bottom { new_y = monitor_rect.bottom - win_height; }
+            
+            if new_x != rect.left || new_y != rect.top {
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND::default(),
+                    new_x,
+                    new_y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOACTIVATE | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
+                );
+            }
+        }
     }
 }

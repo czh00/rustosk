@@ -58,7 +58,7 @@ export const compactLayout: KeyDefinition[][] = [
     { code: 0x4B, label: 'k', sub: 'K', zhPinyin: 'ㄜ' },
     { code: 0x4C, label: 'l', sub: 'L', zhPinyin: 'ㄠ' },
     { code: 0xBA, label: ';', sub: ':', zhPinyin: 'ㄤ' },
-    { code: 0xDE, label: "'", sub: '"' },
+    { code: 0xDE, label: "'", sub: '"', zhPinyin: '、' },
     { code: 0x0D, label: '⏎', class: 'enter special', width: 2.25 }
   ],
   // ZXCV row
@@ -137,7 +137,7 @@ export const fullLayout: KeyDefinition[][] = [
     { code: 0x14, label: 'Caps Lock', special: true, width: 1.75 },
     { code: 0x41, label: 'a', sub: 'A', zhPinyin: 'ㄇ' }, { code: 0x53, label: 's', sub: 'S', zhPinyin: 'ㄋ' }, { code: 0x44, label: 'd', sub: 'D', zhPinyin: 'ㄎ' }, { code: 0x46, label: 'f', sub: 'F', zhPinyin: 'ㄑ' },
     { code: 0x47, label: 'g', sub: 'G', zhPinyin: 'ㄕ' }, { code: 0x48, label: 'h', sub: 'H', zhPinyin: 'ㄘ' }, { code: 0x4A, label: 'j', sub: 'J', zhPinyin: 'ㄨ' }, { code: 0x4B, label: 'k', sub: 'K', zhPinyin: 'ㄜ' },
-    { code: 0x4C, label: 'l', sub: 'L', zhPinyin: 'ㄠ' }, { code: 0xBA, label: ';', sub: ':', zhPinyin: 'ㄤ' }, { code: 0xDE, label: "'", sub: '"' },
+    { code: 0x4C, label: 'l', sub: 'L', zhPinyin: 'ㄠ' }, { code: 0xBA, label: ';', sub: ':', zhPinyin: 'ㄤ' }, { code: 0xDE, label: "'", sub: '"', zhPinyin: '、' },
     { code: 0x0D, label: 'Enter', special: true, width: 2.25 },
     { code: 0, label: '', special: true, class: 'invisible', width: 3.5 },
     { code: 0x64, label: '4', sub: '←', class: 'num-key' }, { code: 0x65, label: '5', sub: '5', class: 'num-key' }, { code: 0x66, label: '6', sub: '→', class: 'num-key' }

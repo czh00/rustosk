@@ -17,6 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             simulate_key, 
+            system::keyboard_simulator::release_all_modifiers,
             system::keyboard_simulator::get_locks,
             system::window_manager::start_custom_drag, 
             system::window_manager::force_exit,
@@ -80,11 +81,17 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            
+            // Initial boundary check
+            let _ = system::window_manager::keep_window_in_screen(&window);
 
             // Start focus detector
             start_detector(window.clone());
             
             Ok(())
+        })
+        .on_window_event(|_window, _event| {
+            // 即時移動偵測已移除，改由 wndproc 的 WM_EXITSIZEMOVE 處理以支援多螢幕與 Snap
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

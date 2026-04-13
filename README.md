@@ -2,8 +2,6 @@
 
 > 本專案是原 C# 版本 OSK 的 **Rust + Tauri** 強力進化版。結合了 Rust 的極致效能、Windows API 的深度整合，以及 Web 技術的流暢 UI，打造出反應最快、最智慧的虛擬鍵盤體驗。
 
-<img width="1078" height="320" alt="RustOSK Preview" src="https://github.com/user-attachments/assets/preview_placeholder.png" />
-
 ---
 
 ## 🌟 核心特色
@@ -17,7 +15,8 @@
 | **100% 全鍵盤** | 包含完整數字九宮格、導航鍵與功能鍵區。 |
 | **60% 精簡版** | 適合螢幕空間有限的情境，配合 `Fn` 鍵可觸發完整功能。 |
 
-- **動態標籤 (v1.0.0)**：按下 `Shift` 或 `Fn` 時，按鍵中心標籤會實時更換為對應字元（例如 `a` 變 `A`、`1` 變 `!`），讓輸出結果一目了然。
+- **動態標籤**：按下 `Shift` 或 `Fn` 時，按鍵中心標籤會實時更換為對應字元（例如 `a` 變 `A`、`1` 變 `!`），讓輸出結果一目了然。
+- **靜態多角標籤**：專注於視覺對比與細節，包含客製化 Numpad 九宮格邏輯（自動在導航與數字間切換光暈）。
 
 ### 🔍 深度輸入焦點偵測
 整合 **UIA (UI Automation)** 與 **Win32 Caret 偵測**，支援 Chrome、VS Code、CMD、Telegram 等多種複雜軟體，精準實現「點擊輸入框自動彈出」、「失去焦點自動隱藏」。
@@ -34,7 +33,7 @@
 
 ---
 
-## 🔘 工具列按鈕說明 (v1.0.0)
+## 🔘 工具列按鈕說明
 
 | 按鈕 | 說明 |
 |------|------|
@@ -49,6 +48,7 @@
 
 ---
 
+
 ## 🛠️ 技術架構
 
 - **Backend**: Rust + [Tauri v2](https://v2.tauri.app/)
@@ -57,36 +57,23 @@
     - `windows-rs`: 深度呼叫 Win32 API 處理視窗樣式 (`HWND_TOPMOST`)。
     - `Imm32`: 精準偵測輸入法狀態。
     - `UI Automation`: 捕捉瀏覽器與現代應用的焦點狀態。
-- **佈局系統**: 基於 CSS Grid 的響應式鍵盤矩陣，支援 `app-scale` 比例縮放。
-- **Tooltip 系統**: 自定義高 Z-index 提示元件，避免被置頂視窗蓋住，且支援即時狀態更新。
 
 ---
 
-## 🚀 開發與執行
+## 📂 開發與執行
 
 ### 環境需求
 1. 安裝 [Rust](https://rustup.rs/)。
 2. 安裝 [Node.js](https://nodejs.org/)。
-3. 如果是在 Windows 上開發，請確保已安裝 [C++ 生成工具](https://visualstudio.microsoft.com/visual-cpp-build-tools/)。
+3. 若於 Windows 開發，請確保已安裝 [C++ 生成工具](https://visualstudio.microsoft.com/visual-cpp-build-tools/)。
 
 ### 執行步驟
-1. 安裝依賴：
-   ```bash
-   npm install
-   ```
-2. 啟動開發者模式：
-   ```bash
-   npm run dev
-   ```
-3. 建置正式版：
-   ```bash
-   npx tauri build --no-bundle
-   ```
-   產出執行檔位於 `src-tauri/target/release/rustosk.exe`。
+1. 安裝依賴：`npm install`
+2. 啟動開發者模式：`npm run dev`
+3. 建置發佈版本：`npx tauri build --no-bundle`
+
+*(註：發佈用的 `.exe` 檔會自動輸出至 `src-tauri/target/release/` 下。)*
 
 ---
-
-## ⚙️ 持續性設定 (osk.ini)
-程式執行期間的所有屬性、視窗位置（相對比例）與自定義版面都會自動儲存於執行檔目錄下的 `osk.ini`。
 
 **© 2026 RustOSK Project - 專業級 Rust 高效能虛擬鍵盤**

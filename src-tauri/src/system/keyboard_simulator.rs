@@ -45,6 +45,43 @@ pub fn simulate_key(vk_code: u8, is_key_up: bool) {
 }
 
 #[command]
+pub fn release_all_modifiers() {
+    let modifiers = [
+        0x10, // VK_SHIFT
+        0x11, // VK_CONTROL
+        0x12, // VK_MENU (ALT)
+        0x5B, // VK_LWIN
+        0x5C, // VK_RWIN
+        0xA0, // VK_LSHIFT
+        0xA1, // VK_RSHIFT
+        0xA2, // VK_LCONTROL
+        0xA3, // VK_RCONTROL
+        0xA4, // VK_LMENU
+        0xA5, // VK_RMENU
+    ];
+
+    let mut inputs = Vec::new();
+    for vk in modifiers {
+        inputs.push(INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16 },
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        });
+    }
+
+    unsafe {
+        let _ = SendInput(&inputs, size_of::<INPUT>() as i32);
+    }
+}
+
+#[command]
 pub fn get_locks() -> (bool, bool) {
     unsafe {
         let caps = (GetKeyState(0x14) & 1) == 1; // VK_CAPITAL

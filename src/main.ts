@@ -300,13 +300,20 @@ function renderKeys() {
           btn.style.gridRow = '';
       }
 
+      const isNum = toggledModifiers.includes(0x90);
       let displayLabel = key.label;
       let labelClass = '';
 
-      // 輸入法切換預覽邏輯
-      if (key.code === 0x5D) {
+      // 功能鍵模式切換提示邏輯 (v1.0.8)
+      if (key.code === 0x5D) { // 注音切換
           displayLabel = isZhuyinMode ? 'En' : 'ㄅ';
           labelClass = isZhuyinMode ? '' : 'color-zh';
+      } else if (key.code === 0xFE) { // Fn
+          labelClass = isFn ? '' : 'color-fn';
+      } else if (key.code === 0xA0 || key.code === 0xA1) { // Shift
+          labelClass = isShift ? '' : 'color-shift';
+      } else if (key.code === 0x90) { // NumLock
+          labelClass = isNum ? '' : 'color-num';
       }
       // 靜態模式下 TL corner 的大寫邏輯 (不管 Shift 都要顯示主要標籤)
       // displayLabel 保持 key.label (大寫) 即可
@@ -321,46 +328,64 @@ function renderKeys() {
           tlStyle += ' left: 5px; letter-spacing: -0.25px;';
       }
       
-      let inner = `<span class="tl ${labelClass}" style="${tlStyle}">${displayLabel}</span>`;
-      if (key.sub) inner += `<span class="tr" style="font-size: ${getAutoFontSize(key.sub, 10)}">${key.sub}</span>`;
-      if (key.fn) inner += `<span class="bl" style="font-size: ${getAutoFontSize(key.fn, 10)}">${key.fn}</span>`;
-      if (key.zhPinyin) inner += `<span class="br" style="font-size: ${getAutoFontSize(key.zhPinyin, 10)}">${key.zhPinyin}</span>`;
+      let inner = '';
+      if (key.class?.includes('num-key')) {
+          // Numpad inversion (v1.1.5): Nav string (sub) at top-left, Number (label) at bottom-right
+          const navStr = key.sub || key.label;
+          const numStr = key.label;
+          let tlNavStyle = `font-size: ${getAutoFontSize(navStr, 13)};`;
+          if (navStr.length >= 3) tlNavStyle += ' left: 4px;';
+          inner += `<span class="tl" style="${tlNavStyle}">${navStr}</span>`;
+          inner += `<span class="br ${labelClass}" style="font-size: ${getAutoFontSize(numStr, 10)}">${numStr}</span>`;
+      } else {
+          inner = `<span class="tl ${labelClass}" style="${tlStyle}">${displayLabel}</span>`;
+          if (key.sub) inner += `<span class="tr" style="font-size: ${getAutoFontSize(key.sub, 10)}">${key.sub}</span>`;
+          if (key.fn) inner += `<span class="bl" style="font-size: ${getAutoFontSize(key.fn, 10)}">${key.fn}</span>`;
+          if (key.zhPinyin) inner += `<span class="br" style="font-size: ${getAutoFontSize(key.zhPinyin, 10)}">${key.zhPinyin}</span>`;
+      }
       
       // 中央動態標籤邏輯
       let centerChar = key.label;
       let centerClass = '';
       
-      const hasNum = toggledModifiers.includes(0x90);
-      
-
+      // 首先處理功能鍵本身的提示配色 (v1.1.0)
+      if (key.code === 0x5D) { // 注音切換
+          centerChar = isZhuyinMode ? 'En' : 'ㄅ';
+          centerClass = isZhuyinMode ? '' : 'color-zh';
+      } else if (key.code === 0xFE) { // Fn 鍵本身
+          centerClass = isFn ? '' : 'color-fn';
+      } else if (key.code === 0xA0 || key.code === 0xA1) { // Shift 鍵本身
+          centerClass = isShift ? '' : 'color-shift';
+      } else if (key.code === 0x90) { // NumLock 鍵本身
+          centerClass = isNum ? '' : 'color-num';
+      }
 
       if (isFn && key.fn) {
           centerChar = key.fn;
-          centerClass = 'color-fn';
+          if (centerClass === '') centerClass = 'color-fn';
       } else if (isShift) {
-          // 根據修飾鍵狀態決定中央標籤內容
           centerChar = key.sub || (isAlpha ? key.label.toUpperCase() : key.label);
           // 只有字母或具備符號的非功能鍵才套用 Shift 配色
           const isSymbolKey = !isAlpha && key.sub && !key.class?.includes('num-key');
           if (isAlpha || isSymbolKey) {
-              centerClass = 'color-shift';
+              if (centerClass === '') centerClass = 'color-shift';
           }
       } else if (isZhuyinMode && key.zhPinyin) {
           centerChar = key.zhPinyin;
-          centerClass = 'color-zh';
+          if (centerClass === '') centerClass = 'color-zh';
       } else if (isCaps && isAlpha) {
           centerChar = key.label.toUpperCase();
           centerClass = 'color-shift';
       } else if (key.class?.includes('num-key')) {
           // 數字鍵盤切換：當 NumLock 開啟時顯示數字，關閉時顯示導覽鍵
-          if (hasNum) {
+          if (isNum) {
               centerChar = key.label;
               centerClass = 'color-num';
           } else {
               centerChar = key.sub || key.label;
               centerClass = '';
           }
-      } else if (key.code >= 0x60 && key.code <= 0x6F) {
+      } else if ((key.code >= 0x60 && key.code <= 0x69) || key.code === 0x6E) { // 僅數字與小數點
           centerClass = 'color-num';
       } else if (!key.special) {
           centerChar = key.label.toLowerCase();
@@ -414,6 +439,8 @@ function renderKeys() {
         
         ghost = btn.cloneNode(true) as HTMLElement;
         ghost.classList.add('key-ghost');
+        ghost.style.left = rect.left + 'px';
+        ghost.style.top = rect.top + 'px';
         document.body.appendChild(ghost);
         btn.setPointerCapture(e.pointerId);
       });
@@ -466,7 +493,14 @@ async function handleKeyPress(btn: HTMLElement, key: KeyDefinition) {
       if (idx > -1) { 
         toggledModifiers.splice(idx, 1);
         btn.classList.remove('active-toggle');
-        if (key.code !== 0xFE) invoke('simulate_key', { vkCode: key.code, isKeyUp: true });
+        if (key.code !== 0xFE) {
+            if (key.code === 0xA4 || key.code === 0xA5) {
+                // 遮蔽 Alt 釋放訊號，避免彈出應用程式選單 (VK_NONAME = 0xFF)
+                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: false });
+                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: true });
+            }
+            invoke('simulate_key', { vkCode: key.code, isKeyUp: true });
+        }
       } else { 
         toggledModifiers.push(key.code);
         btn.classList.add('active-toggle');
@@ -502,6 +536,7 @@ async function handleKeyRelease(btn: HTMLElement, key: KeyDefinition) {
     btn.classList.remove('active');
     const isModifier = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0xFE].includes(key.code);
     if (!isModifier) {
+      if (key.code === 0x5D) return; // 屏蔽注音切換鍵的原生物理信號
       const isFn = toggledModifiers.includes(0xFE);
       let targetVk = key.code;
 
@@ -521,14 +556,44 @@ async function handleKeyRelease(btn: HTMLElement, key: KeyDefinition) {
           await checkAndSyncLocks();
       }
       
+      // 智慧 Alt-Tab 邏輯 (v1.1.6)：若目前按的是 Tab (0x09)，且 Alt 已被切換常駐，就不主動釋放 Alt
+      const isAltTab = key.code === 0x09 && (toggledModifiers.includes(0xA4) || toggledModifiers.includes(0xA5));
+
       for (const mod of toggledModifiers) {
-         if (mod !== 0xFE && mod !== 0x14 && mod !== 0x90) invoke('simulate_key', { vkCode: mod, isKeyUp: true });
+         if (mod !== 0xFE && mod !== 0x14 && mod !== 0x90) {
+            // 若為 Alt-Tab 連鎖技且目前釋放對象為 Alt，則略過 (保留 Alt 的物理按下狀態)
+            if (isAltTab && (mod === 0xA4 || mod === 0xA5)) {
+                continue;
+            }
+            if (mod === 0xA4 || mod === 0xA5) {
+                // 自動釋放時同樣進行 Alt 遮蔽
+                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: false });
+                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: true });
+            }
+            invoke('simulate_key', { vkCode: mod, isKeyUp: true });
+         }
       }
+      
+      // 若為 Alt-Tab 組合則略過全域釋放以維持連續切換狀態
+      if (!isAltTab) {
+          invoke('release_all_modifiers');
+      }
+
       for (let i = toggledModifiers.length - 1; i >= 0; i--) {
-          if (toggledModifiers[i] !== 0x14 && toggledModifiers[i] !== 0x90 && toggledModifiers[i] !== 0xFE) toggledModifiers.splice(i, 1);
+          const modInfo = toggledModifiers[i];
+          // 陣列中移除已釋放的修飾鍵。若是 Alt 且是 Alt-Tab 組合，就保留！
+          if (modInfo !== 0x14 && modInfo !== 0x90 && modInfo !== 0xFE) {
+              if (isAltTab && (modInfo === 0xA4 || modInfo === 0xA5)) continue;
+              toggledModifiers.splice(i, 1);
+          }
       }
+      
       document.querySelectorAll('.active-toggle').forEach((el: any) => {
-          if (el.dataset.vk !== "20" && el.dataset.vk !== "144" && el.dataset.vk !== "254") el.classList.remove('active-toggle');
+          const vk = el.dataset.vk;
+          if (vk !== "20" && vk !== "144" && vk !== "254") {
+              if (isAltTab && (vk === "164" || vk === "165")) return;
+              el.classList.remove('active-toggle');
+          }
       });
       updateKeyboardDynamicMod();
     }
@@ -709,7 +774,16 @@ async function setupToolbar() {
         await saveCurrentConfig();
     });
 
-    btnSos?.addEventListener('click', () => { invoke('open_sos'); });
+    btnSos?.addEventListener('click', async () => { 
+        // 進入 SOS 模式前，先清除所有當前 toggled 的修飾鍵，避免干擾系統鍵盤
+        for (const mod of toggledModifiers) {
+            const modBtn = document.querySelector(`.key[data-code="${mod}"]`);
+            if (modBtn) modBtn.classList.remove('active-toggle');
+        }
+        toggledModifiers.length = 0;
+        await invoke('release_all_modifiers');
+        invoke('open_sos'); 
+    });
 
     btnEdit?.addEventListener('click', () => {
         isEditMode = !isEditMode;
@@ -757,8 +831,8 @@ function applyTheme(dark: boolean) {
         root.style.setProperty('--border-color', 'rgba(255, 255, 255, 0.1)');
         
         // 恢復深色模式原始高對比色彩
-        root.style.setProperty('--color-tl', '#38bdf8'); 
-        root.style.setProperty('--color-tr', '#bae6fd'); 
+        root.style.setProperty('--color-tl', '#f8fafc'); 
+        root.style.setProperty('--color-tr', '#38bdf8'); 
         root.style.setProperty('--color-bl', '#4ade80'); 
         root.style.setProperty('--color-br', '#fbbf24'); 
         
@@ -772,8 +846,8 @@ function applyTheme(dark: boolean) {
         root.style.setProperty('--border-color', 'rgba(0, 0, 0, 0.1)');
         
         // 淺色模式高對比角落色彩
-        root.style.setProperty('--color-tl', '#0369a1'); 
-        root.style.setProperty('--color-tr', '#0f172a'); 
+        root.style.setProperty('--color-tl', '#1e293b'); 
+        root.style.setProperty('--color-tr', '#0369a1'); 
         root.style.setProperty('--color-bl', '#15803d'); 
         root.style.setProperty('--color-br', '#b45309'); 
         
