@@ -1,10 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { compactLayout, fullLayout, KeyDefinition } from './layouts';
+import { compactLayout, fullLayout, KeyDefinition, CornerOverride } from './layouts';
 
 declare const __APP_VERSION__: string;
-// const APP_VERSION = __APP_VERSION__;
 
 const toggledModifiers: number[] = [];
 let currentLayout: KeyDefinition[][] = compactLayout;
@@ -24,6 +23,18 @@ let ghost: HTMLElement | null = null;
 let dragStartX = 0;
 let dragStartY = 0;
 let currentHoverTarget: HTMLElement | null = null;
+// When true, skip the next automatic syncWindowSize() call (used to avoid
+// restoring window to default size right after exiting edit mode)
+let skipNextSyncWindowSize = false;
+let userAdjustedSize = false;
+let isProgrammaticResize = false;
+let pinnedBackupBeforeEdit: boolean | null = null;
+
+
+// Custom Key Overrides & Long Press
+let longPressTimer: any = null;
+let editingKeyPos: string | null = null;
+const LONG_PRESS_DURATION = 600;
 
 
 interface OSKConfig {
@@ -45,6 +56,15 @@ async function initApp() {
 
     // 1. 初始化設定載入
     try {
+        const isReset = sessionStorage.getItem('reset_pending') === 'true';
+        if (isReset) {
+            sessionStorage.removeItem('reset_pending');
+            isFirstBoot = true;
+            userAdjustedSize = false;
+            document.documentElement.style.setProperty('--app-scale', '1');
+            console.log("Reset detected, forcing first boot defaults");
+        }
+        
         const savedData = await invoke<string>('load_config');
         const config = JSON.parse(savedData);
         
@@ -88,22 +108,39 @@ async function initApp() {
     try {
         const window = getCurrentWindow();
         await window.setTitle(`rustosk`);
-        await invoke('set_pinned', { pinned: isPinned });
-        await invoke('set_dynamic_display', { enabled: isDynamic });
-        await checkAndSyncLocks();
     } catch (e) { console.error(e); }
+    
+    try {
+        // 如果是重置，確保後端也同步狀態
+        if (isFirstBoot) {
+            isPinned = true;
+            isDynamic = true;
+            await invoke('set_pinned', { pinned: true });
+            await invoke('set_dynamic_display', { enabled: true });
+        } else {
+            await invoke('set_pinned', { pinned: isPinned });
+            await invoke('set_dynamic_display', { enabled: isDynamic });
+        }
+        await checkAndSyncLocks();
+    } catch (e) { console.error("Sync state failed:", e); }
 
     // 5. 視窗定位與尺寸同步
     setTimeout(async () => {
+        const isReset = isFirstBoot; // 如果是重置，確保執行強制縮放 1.0 並重置 userAdjustedSize
+        if (isReset) {
+            userAdjustedSize = false;
+            document.documentElement.style.setProperty('--app-scale', '1');
+        }
+
         const savedData = await invoke<string>('load_config').catch(() => "{}");
         const config = JSON.parse(savedData);
-        if (config.w && config.h) {
+        if (config.w && config.h && !isReset) {
             await invoke('resize_window', { width: config.w, height: config.h });
         }
         if (config.rX !== undefined && config.rY !== undefined && !isFirstBoot) {
              await invoke('apply_relative_pos', { rx: config.rX, ry: config.rY });
         }
-        await syncWindowSize();
+        await syncWindowSize(isReset); // 如果是重置，強制同步
     }, 100);
 }
 
@@ -153,6 +190,7 @@ function syncUIState() {
         btnEdit.innerHTML = isEditMode ? '👁️' : '⚙'; // 編輯時顯示眼睛(預告點擊變觀看)
         btnEdit.setAttribute('data-tip', getIntegratedTip(btnEdit, isEditMode ? '返回觀看模式' : '開啟編輯模式'));
         btnEdit.classList.toggle('active-tool', isEditMode);
+        document.body.classList.toggle('edit-mode', isEditMode);
     }
     
     refreshActiveTooltip();
@@ -281,7 +319,7 @@ function renderKeys() {
       
       // 設定按鈕尺寸與網格跨度
       if (isFull) {
-          const gridSpan = Math.round(w * 4);
+          const gridSpan = Math.round(w * 12);
           btn.style.gridColumn = `span ${gridSpan}`;
           
           if (key.height === 2) {
@@ -304,7 +342,7 @@ function renderKeys() {
       let displayLabel = key.label;
       let labelClass = '';
 
-      // 功能鍵模式切換提示邏輯 (v1.0.8)
+      // 功能鍵模式切換提示邏輯
       if (key.code === 0x5D) { // 注音切換
           displayLabel = isZhuyinMode ? 'En' : 'ㄅ';
           labelClass = isZhuyinMode ? '' : 'color-zh';
@@ -330,7 +368,7 @@ function renderKeys() {
       
       let inner = '';
       if (key.class?.includes('num-key')) {
-          // Numpad inversion (v1.1.5): Nav string (sub) at top-left, Number (label) at bottom-right
+          // Numpad 翻轉邏輯：導覽鍵字串顯示於左上，數字顯示於右下
           const navStr = key.sub || key.label;
           const numStr = key.label;
           let tlNavStyle = `font-size: ${getAutoFontSize(navStr, 13)};`;
@@ -338,17 +376,22 @@ function renderKeys() {
           inner += `<span class="tl" style="${tlNavStyle}">${navStr}</span>`;
           inner += `<span class="br ${labelClass}" style="font-size: ${getAutoFontSize(numStr, 10)}">${numStr}</span>`;
       } else {
-          inner = `<span class="tl ${labelClass}" style="${tlStyle}">${displayLabel}</span>`;
-          if (key.sub) inner += `<span class="tr" style="font-size: ${getAutoFontSize(key.sub, 10)}">${key.sub}</span>`;
-          if (key.fn) inner += `<span class="bl" style="font-size: ${getAutoFontSize(key.fn, 10)}">${key.fn}</span>`;
-          if (key.zhPinyin) inner += `<span class="br" style="font-size: ${getAutoFontSize(key.zhPinyin, 10)}">${key.zhPinyin}</span>`;
+          const tlDisp = key.tl_ov?.display || displayLabel;
+          const trDisp = key.tr_ov?.display || key.sub;
+          const blDisp = key.bl_ov?.display || key.fn;
+          const brDisp = key.br_ov?.display || key.zhPinyin;
+
+          inner = `<span class="tl ${labelClass}" style="font-size: ${getAutoFontSize(tlDisp, 13)}">${tlDisp}</span>`;
+          if (trDisp) inner += `<span class="tr" style="font-size: ${getAutoFontSize(trDisp, 10)}">${trDisp}</span>`;
+          if (blDisp) inner += `<span class="bl" style="font-size: ${getAutoFontSize(blDisp, 10)}">${blDisp}</span>`;
+          if (brDisp) inner += `<span class="br" style="font-size: ${getAutoFontSize(brDisp, 10)}">${brDisp}</span>`;
       }
       
       // 中央動態標籤邏輯
       let centerChar = key.label;
       let centerClass = '';
       
-      // 首先處理功能鍵本身的提示配色 (v1.1.0)
+      // 處理功能鍵本身的提示配色
       if (key.code === 0x5D) { // 注音切換
           centerChar = isZhuyinMode ? 'En' : 'ㄅ';
           centerClass = isZhuyinMode ? '' : 'color-zh';
@@ -393,12 +436,17 @@ function renderKeys() {
 
       if (key.code === 0x5D) {
           // 預覽型標籤
-          centerChar = isZhuyinMode ? 'En' : 'ㄅ';
-          centerClass = isZhuyinMode ? '' : 'color-zh';
+          centerChar = (isZhuyinMode ? 'En' : 'ㄅ');
       } else if (key.special && !isDynamic) {
           // 靜態模式下的功能鍵處理
           centerChar = displayLabel;
       }
+
+      // --- Use Override Display for Center Label if applicable ---
+      if (isFn && key.bl_ov?.display) centerChar = key.bl_ov.display;
+      else if (isShift && key.tr_ov?.display) centerChar = key.tr_ov.display;
+      else if (isZhuyinMode && key.br_ov?.display) centerChar = key.br_ov.display;
+      else if (key.tl_ov?.display) centerChar = key.tl_ov.display;
 
       inner += `<span class="center-label ${centerClass}" style="font-size: ${getAutoFontSize(centerChar, 24)}">${centerChar}</span>`;
       btn.innerHTML = inner;
@@ -431,6 +479,16 @@ function renderKeys() {
           handleKeyPress(btn, key);
           return;
         }
+
+        // --- Long-press detection for Editing ---
+        if (longPressTimer) clearTimeout(longPressTimer);
+        longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            editingKeyPos = btn.dataset.pos || null;
+            openKeyEditor(key);
+            cleanupDrag(); // Cancel any ongoing drag
+        }, LONG_PRESS_DURATION);
+
         const rect = btn.getBoundingClientRect();
         dragStartX = e.clientX - rect.left;
         dragStartY = e.clientY - rect.top;
@@ -439,6 +497,8 @@ function renderKeys() {
         
         ghost = btn.cloneNode(true) as HTMLElement;
         ghost.classList.add('key-ghost');
+        ghost.style.width = rect.width + 'px';
+        ghost.style.height = rect.height + 'px';
         ghost.style.left = rect.left + 'px';
         ghost.style.top = rect.top + 'px';
         document.body.appendChild(ghost);
@@ -447,15 +507,34 @@ function renderKeys() {
 
       btn.addEventListener('pointermove', (e: PointerEvent) => {
         if (!isEditMode || !draggedKey || !ghost) return;
-        ghost.style.left = (e.clientX - dragStartX) + 'px';
-        ghost.style.top = (e.clientY - dragStartY) + 'px';
-        
-        const target = getDropTarget(e.clientX, e.clientY);
-        document.querySelectorAll('.key').forEach(k => k.classList.remove('drag-over'));
-        if (target && target !== draggedKey) target.classList.add('drag-over');
+
+        // If moved significantly, cancel long-press
+        if (longPressTimer) {
+            const rect = draggedKey.getBoundingClientRect();
+            const dx = Math.abs(e.clientX - (rect.left + dragStartX));
+            const dy = Math.abs(e.clientY - (rect.top + dragStartY));
+            if (dx > 5 || dy > 5) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+        }
+
+        if (!longPressTimer) { // Only drag if NOT in a long-press wait
+            ghost.style.left = (e.clientX - dragStartX) + 'px';
+            ghost.style.top = (e.clientY - dragStartY) + 'px';
+            
+            const target = getDropTarget(e.clientX, e.clientY);
+            document.querySelectorAll('.key').forEach(k => k.classList.remove('drag-over'));
+            if (target && target !== draggedKey) target.classList.add('drag-over');
+        }
       });
 
       btn.addEventListener('pointerup', (e: PointerEvent) => {
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+
         if (!isEditMode) {
             handleKeyRelease(btn, key);
             return;
@@ -485,8 +564,122 @@ const fnKeyMap: Record<string, number> = {
     '⌦': 0x2E, // Delete (VK_DELETE)
 };
 
+const MODIFIER_NAME_MAP: Record<string, number> = {
+    'ctrl': 0x11, 'control': 0x11,
+    'shift': 0x10,
+    'alt': 0x12, 'menu': 0x12,
+    'win': 0x5B, 'lwin': 0x5B, 'rwin': 0x5C, 'cmd': 0x5B,
+};
+
+function parseKeyValue(input: string): number[] {
+    if (!input) return [];
+    // Handle combinations like "Ctrl+C"
+    if (input.includes('+')) {
+        return input.split('+').map(part => {
+            const trimmed = part.trim().toLowerCase();
+            if (MODIFIER_NAME_MAP[trimmed]) return MODIFIER_NAME_MAP[trimmed];
+            return parseSingleKey(trimmed);
+        }).filter(v => v > 0);
+    }
+    return [parseSingleKey(input.trim().toLowerCase())].filter(v => v > 0);
+}
+
+function parseSingleKey(input: string): number {
+    if (input.startsWith('0x')) return parseInt(input, 16);
+    if (/^\d+$/.test(input)) return parseInt(input, 10);
+    if (MODIFIER_NAME_MAP[input]) return MODIFIER_NAME_MAP[input];
+    if (input.length === 1) return input.toUpperCase().charCodeAt(0);
+    // Common names
+    const names: Record<string, number> = {
+        'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'space': 0x20, 
+        'backspace': 0x08, 'del': 0x2E, 'delete': 0x2E,
+        'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27
+    };
+    return names[input] || 0;
+}
+
+function getDefaultKeyValue(key: KeyDefinition, corner: 'tl'|'tr'|'bl'|'br'): string {
+    if (corner === 'tl') return `0x${key.code.toString(16)}`;
+    if (corner === 'tr') return key.sub ? `Shift+0x${key.code.toString(16)}` : ""; 
+    if (corner === 'bl') {
+        if (!key.fn) return "";
+        if (key.fn.startsWith('F')) {
+            const fNum = parseInt(key.fn.substring(1));
+            return `0x${(0x6F + fNum).toString(16)}`;
+        }
+        if (fnKeyMap[key.fn]) return `0x${fnKeyMap[key.fn].toString(16)}`;
+        // For special keys, bl often is empty unless defined, but we can default to TL if requested.
+        // User said specifically Ctrl/Alt/Arrows, those usually have TL values.
+        return "";
+    }
+    return "";
+}
+
+function openKeyEditor(key: KeyDefinition) {
+    const modal = document.getElementById('key-editor-modal');
+    if (!modal) return;
+    
+    (document.getElementById('edit-tl-display') as HTMLInputElement).value = key.tl_ov?.display || key.label || "";
+    (document.getElementById('edit-tl-value') as HTMLInputElement).value = key.tl_ov?.value || getDefaultKeyValue(key, 'tl');
+
+    (document.getElementById('edit-tr-display') as HTMLInputElement).value = key.tr_ov?.display || key.sub || "";
+    (document.getElementById('edit-tr-value') as HTMLInputElement).value = key.tr_ov?.value || getDefaultKeyValue(key, 'tr');
+
+    (document.getElementById('edit-bl-display') as HTMLInputElement).value = key.bl_ov?.display || key.fn || "";
+    (document.getElementById('edit-bl-value') as HTMLInputElement).value = key.bl_ov?.value || getDefaultKeyValue(key, 'bl');
+
+    (document.getElementById('edit-br-display') as HTMLInputElement).value = key.br_ov?.display || key.zhPinyin || "";
+    (document.getElementById('edit-br-value') as HTMLInputElement).value = key.br_ov?.value || "";
+
+    modal.classList.add('active');
+}
+
+function closeKeyEditor() {
+    document.getElementById('key-editor-modal')?.classList.remove('active');
+    editingKeyPos = null;
+}
+
+async function saveKeyLabels() {
+    if (!editingKeyPos) return;
+    const [r, c] = editingKeyPos.split(',').map(Number);
+    const key = currentLayout[r][c];
+    
+    const getVal = (id: string) => (document.getElementById(id) as HTMLInputElement).value.trim();
+    
+    key.tl_ov = { display: getVal('edit-tl-display'), value: getVal('edit-tl-value') };
+    key.tr_ov = { display: getVal('edit-tr-display'), value: getVal('edit-tr-value') };
+    key.bl_ov = { display: getVal('edit-bl-display'), value: getVal('edit-bl-value') };
+    key.br_ov = { display: getVal('edit-br-display'), value: getVal('edit-br-value') };
+
+    renderKeys();
+    await saveCurrentConfig();
+    closeKeyEditor();
+}
+
 async function handleKeyPress(btn: HTMLElement, key: KeyDefinition) {
     btn.classList.add('active');
+
+    // --- Check for Overrides first ---
+    const isShift = toggledModifiers.includes(0xA0) || toggledModifiers.includes(0xA1);
+    const isFn = toggledModifiers.includes(0xFE);
+    
+    let override: CornerOverride | undefined;
+    if (isFn && key.bl_ov?.value) override = key.bl_ov;
+    else if (isShift && key.tr_ov?.value) override = key.tr_ov;
+    else if (isZhuyinMode && key.br_ov?.value) override = key.br_ov;
+    else if (key.tl_ov?.value) override = key.tl_ov;
+
+    if (override) {
+        const vks = parseKeyValue(override.value);
+        if (vks.length > 1) {
+            await invoke('simulate_combination', { vkCodes: vks });
+            return;
+        } else if (vks.length === 1) {
+            invoke('simulate_key', { vkCode: vks[0], isKeyUp: false });
+            return;
+        }
+    }
+
     const isModifier = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0xFE].includes(key.code);
     if (isModifier) {
       const idx = toggledModifiers.indexOf(key.code);
@@ -495,7 +688,6 @@ async function handleKeyPress(btn: HTMLElement, key: KeyDefinition) {
         btn.classList.remove('active-toggle');
         if (key.code !== 0xFE) {
             if (key.code === 0xA4 || key.code === 0xA5) {
-                // 遮蔽 Alt 釋放訊號，避免彈出應用程式選單 (VK_NONAME = 0xFF)
                 invoke('simulate_key', { vkCode: 0xFF, isKeyUp: false });
                 invoke('simulate_key', { vkCode: 0xFF, isKeyUp: true });
             }
@@ -509,21 +701,18 @@ async function handleKeyPress(btn: HTMLElement, key: KeyDefinition) {
       updateKeyboardDynamicMod();
       return;
     }
-    // 模擬輸入法切換鍵 (0x5D)
-    // 透過發送 Shift 訊號供系統切換，UI 狀態將由後端 focus_changed 事件統一驅動
+
     if (key.code === 0x5D) {
        invoke('simulate_key', { vkCode: 0xA0, isKeyUp: false });
        setTimeout(() => invoke('simulate_key', { vkCode: 0xA0, isKeyUp: true }), 50);
        return;
     }
 
-    const isFn = toggledModifiers.includes(0xFE);
     let targetVk = key.code;
-
     if (isFn && key.fn) {
         if (key.fn.startsWith('F')) {
             const fNum = parseInt(key.fn.substring(1));
-            targetVk = 0x6F + fNum; // F1=0x70, F12=0x7B
+            targetVk = 0x6F + fNum;
         } else if (fnKeyMap[key.fn]) {
             targetVk = fnKeyMap[key.fn];
         }
@@ -536,10 +725,28 @@ async function handleKeyRelease(btn: HTMLElement, key: KeyDefinition) {
     btn.classList.remove('active');
     const isModifier = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0xFE].includes(key.code);
     if (!isModifier) {
-      if (key.code === 0x5D) return; // 屏蔽注音切換鍵的原生物理信號
-      const isFn = toggledModifiers.includes(0xFE);
-      let targetVk = key.code;
+      if (key.code === 0x5D) return; 
 
+      // --- Handle Release for Overrides ---
+      const isShift = toggledModifiers.includes(0xA0) || toggledModifiers.includes(0xA1);
+      const isFn = toggledModifiers.includes(0xFE);
+      let override: CornerOverride | undefined;
+      if (isFn && key.bl_ov?.value) override = key.bl_ov;
+      else if (isShift && key.tr_ov?.value) override = key.tr_ov;
+      else if (isZhuyinMode && key.br_ov?.value) override = key.br_ov;
+      else if (key.tl_ov?.value) override = key.tl_ov;
+
+      if (override) {
+          const vks = parseKeyValue(override.value);
+          if (vks.length > 1) {
+              return; 
+          } else if (vks.length === 1) {
+              await invoke('simulate_key', { vkCode: vks[0], isKeyUp: true });
+              return;
+          }
+      }
+
+      let targetVk = key.code;
       if (isFn && key.fn) {
           if (key.fn.startsWith('F')) {
               const fNum = parseInt(key.fn.substring(1));
@@ -551,22 +758,16 @@ async function handleKeyRelease(btn: HTMLElement, key: KeyDefinition) {
 
       await invoke('simulate_key', { vkCode: targetVk, isKeyUp: true });
       
-      // 如果按的是 NumLock (0x90) 或 CapsLock (0x14)，立刻同步 UI
       if (key.code === 0x90 || key.code === 0x14) {
           await checkAndSyncLocks();
       }
       
-      // 智慧 Alt-Tab 邏輯 (v1.1.6)：若目前按的是 Tab (0x09)，且 Alt 已被切換常駐，就不主動釋放 Alt
       const isAltTab = key.code === 0x09 && (toggledModifiers.includes(0xA4) || toggledModifiers.includes(0xA5));
 
       for (const mod of toggledModifiers) {
          if (mod !== 0xFE && mod !== 0x14 && mod !== 0x90) {
-            // 若為 Alt-Tab 連鎖技且目前釋放對象為 Alt，則略過 (保留 Alt 的物理按下狀態)
-            if (isAltTab && (mod === 0xA4 || mod === 0xA5)) {
-                continue;
-            }
+            if (isAltTab && (mod === 0xA4 || mod === 0xA5)) continue;
             if (mod === 0xA4 || mod === 0xA5) {
-                // 自動釋放時同樣進行 Alt 遮蔽
                 invoke('simulate_key', { vkCode: 0xFF, isKeyUp: false });
                 invoke('simulate_key', { vkCode: 0xFF, isKeyUp: true });
             }
@@ -574,14 +775,12 @@ async function handleKeyRelease(btn: HTMLElement, key: KeyDefinition) {
          }
       }
       
-      // 若為 Alt-Tab 組合則略過全域釋放以維持連續切換狀態
       if (!isAltTab) {
           invoke('release_all_modifiers');
       }
 
       for (let i = toggledModifiers.length - 1; i >= 0; i--) {
           const modInfo = toggledModifiers[i];
-          // 陣列中移除已釋放的修飾鍵。若是 Alt 且是 Alt-Tab 組合，就保留！
           if (modInfo !== 0x14 && modInfo !== 0x90 && modInfo !== 0xFE) {
               if (isAltTab && (modInfo === 0xA4 || modInfo === 0xA5)) continue;
               toggledModifiers.splice(i, 1);
@@ -621,11 +820,60 @@ async function swapKeys(pos1: string, pos2: string) {
     const [r2, c2] = pos2.split(',').map(Number);
     const k1 = currentLayout[r1][c1];
     const k2 = currentLayout[r2][c2];
-    const w1 = k1.width;
-    const w2 = k2.width;
-    const temp = { ...k1 };
-    currentLayout[r1][c1] = { ...k2, width: w1 };
-    currentLayout[r2][c2] = { ...temp, width: w2 };
+
+    // 分離「功能/內容」屬性與「物理/佈局」屬性
+    const getContent = (k: any) => ({
+        code: k.code,
+        label: k.label,
+        sub: k.sub,
+        fn: k.fn,
+        zhPinyin: k.zhPinyin,
+        tl_ov: k.tl_ov,
+        tr_ov: k.tr_ov,
+        bl_ov: k.bl_ov,
+        br_ov: k.br_ov
+    });
+
+    const getLayout = (k: any) => ({
+        width: k.width,
+        height: k.height,
+        special: k.special // 通常 special 跟隨佈局 (如 invisible)
+    });
+
+    // 類別處理：
+    // 功能性類別 (隨內容走)
+    const functionalClasses = ['num-key', 'cyan-text', 'mode-key', 'fn-key', 'alpha-key', 'symbol-key'];
+    // 佈局性類別 (留在原地)
+    const layoutClasses = ['invisible', 'space', 'enter'];
+
+    const splitClass = (cls: string = "") => {
+        const parts = cls.split(' ').filter(c => c && c !== 'key' && c !== 'dragging' && c !== 'drag-over' && c !== 'edit-target');
+        return {
+            functional: parts.filter(p => functionalClasses.includes(p)),
+            layout: parts.filter(p => layoutClasses.includes(p))
+        };
+    };
+
+    const content1 = getContent(k1);
+    const content2 = getContent(k2);
+    const l1 = getLayout(k1);
+    const l2 = getLayout(k2);
+    const cls1 = splitClass(k1.class);
+    const cls2 = splitClass(k2.class);
+
+    // 套用交換：新的 k1 = k2 的內容 + k1 的佈局
+    currentLayout[r1][c1] = {
+        ...content2,
+        ...l1,
+        class: ['key', ...cls1.layout, ...cls2.functional].filter(Boolean).join(' ')
+    };
+
+    // 新的 k2 = k1 的內容 + k2 的佈局
+    currentLayout[r2][c2] = {
+        ...content1,
+        ...l2,
+        class: ['key', ...cls2.layout, ...cls1.functional].filter(Boolean).join(' ')
+    };
     
     renderKeys();
     await saveCurrentConfig();
@@ -666,6 +914,9 @@ function updateKeyboardDynamicMod() {
  * 使用邏輯像素 (Logical Pixels) 以避免在高 DPI 螢幕上發生雙重縮放
  */
 function updateAppScale() {
+    // 如果正在進行程式化調整或剛重置，暫不根據當前視窗寬度重算比例
+    if (isProgrammaticResize || isFirstBoot) return;
+    
     const kb = document.getElementById('keyboard');
     if (!kb) return;
 
@@ -679,23 +930,41 @@ function updateAppScale() {
     document.documentElement.style.setProperty('--app-scale', scale.toString());
 }
 
-async function syncWindowSize() {
+async function syncWindowSize(force = false) {
     const kb = document.getElementById('keyboard');
     if (!kb) return;
     
+    // 編輯模式下通常不自動重設視窗尺寸，除非佈局切換強制同步
+    if (isEditMode && !force) return;
+    // 如果使用者手動調整過尺寸，則停止自動重置
+    if (userAdjustedSize && !force) return;
+    // If flagged, skip a single automatic sync to avoid restoring defaults
+    if (skipNextSyncWindowSize && !force) { skipNextSyncWindowSize = false; return; }
+    
     requestAnimationFrame(async () => {
-        const rect = kb.getBoundingClientRect();
+        
+        // 讀取目前的縮放比例，用於維持按鍵視覺大小一致
         const currentScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-scale') || "1");
         
-        // 使用佈局基準寬度
-        const targetBaseWidth = isFull ? 1078 : 723;
-        const width = targetBaseWidth + 4;
+        // 使用 scrollHeight 取得鍵盤內容真實高度 (scrollHeight 是未經 CSS 縮放的原始高度)
+        const naturalHeight = kb.scrollHeight;
         
-        // 動態計算高度並還原比例
-        const height = Math.round((rect.height / currentScale) + 6);
-
-        await invoke('update_aspect_ratio', { width, height });
-        await invoke('resize_and_recenter', { width, height, forceCenter: isFirstBoot });
+        // 使用佈局基準寬度
+        const naturalWidth = isFull ? 1078 : 723;
+        
+        // 計算實際視窗尺寸，採比例維持型同步，確保切換版面後按鍵視覺尺寸一致
+        const width = Math.ceil(naturalWidth * currentScale);
+        const height = Math.ceil(naturalHeight * currentScale) + 4; 
+        
+        // 標記目前正在程式調整大小，防止觸發 userAdjustedSize
+        isProgrammaticResize = true;
+        try {
+            await invoke('update_aspect_ratio', { width, height });
+            await invoke('resize_and_recenter', { width, height, forceCenter: isFirstBoot });
+        } finally {
+            // 給予短暫延遲確保 resize 事件已被處理
+            setTimeout(() => { isProgrammaticResize = false; }, 100);
+        }
         
         if (isFirstBoot) {
             isFirstBoot = false; 
@@ -727,18 +996,21 @@ async function setupToolbar() {
         isFull = !isFull;
         currentLayout = isFull ? fullLayout : compactLayout;
         
-        // 切換佈局前更新基準寬度與縮放鎖定
+        // 切換佈局時，獲取目前的 scale 並標記為 userAdjustedSize 以維持比例
+        const currentScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-scale') || "1");
+        userAdjustedSize = true; 
+        
         const baseWidth = isFull ? 1078 : 723;
         document.documentElement.style.setProperty('--base-width', `${baseWidth}px`);
-        
-        await invoke('update_aspect_ratio', { width: baseWidth + 4, height: 320 });
-        await invoke('resize_window', { width: baseWidth + 4, height: 320 });
         
         syncUIState(); 
         renderKeys();
         
-        // 額外保險
-        setTimeout(syncWindowSize, 200);
+        // 更新當前比例，確保佈局切換後視覺大小一致
+        document.documentElement.style.setProperty('--app-scale', currentScale.toString());
+        
+        // 執行多步同步，傳入 force=true 以確保即便在縮放狀態下也能正確計算新版面的寬高
+        [100, 300, 600].forEach(delay => setTimeout(() => syncWindowSize(true), delay));
         setTimeout(saveCurrentConfig, 1000);
     });
 
@@ -747,10 +1019,10 @@ async function setupToolbar() {
             try {
                 // 1. 清除 Rust 端的實體設定檔 (osk.ini)
                 await invoke('reset_config');
-                // 2. 清除瀏覽器快取
+                // 2. 清除瀏覽器快取 (localStorage 可能存有舊的視窗狀態)
                 localStorage.clear();
-                // 3. 設定預設透明度為 1.0 (完全不透明)
-                localStorage.setItem('osk_opacity', '1.0');
+                // 3. 設定標記，確保重啟後恢復 1.0 比例
+                sessionStorage.setItem('reset_pending', 'true');
                 // 4. 重啟以套用全新狀態
                 location.reload();
             } catch (e) {
@@ -785,11 +1057,34 @@ async function setupToolbar() {
         invoke('open_sos'); 
     });
 
-    btnEdit?.addEventListener('click', () => {
-        isEditMode = !isEditMode;
-        btnEdit.classList.toggle('active-tool', isEditMode);
-        document.body.classList.toggle('edit-mode', isEditMode);
+    btnEdit?.addEventListener('click', async () => {
+        const entering = !isEditMode;
+        isEditMode = entering;
+        
+        // 編輯模式暫存圖釘狀態
+        if (entering) {
+            pinnedBackupBeforeEdit = isPinned;
+            if (!isPinned) {
+                isPinned = true;
+                await invoke('set_pinned', { pinned: true });
+            }
+        } else {
+            if (pinnedBackupBeforeEdit !== null) {
+                isPinned = pinnedBackupBeforeEdit;
+                await invoke('set_pinned', { pinned: isPinned });
+                pinnedBackupBeforeEdit = null;
+            }
+        }
+        
+        // 統一邏輯：切換模式時重置尺寸鎖定，並以按鍵內容尺寸為基準強制擴展視窗
+        userAdjustedSize = false;
+        skipNextSyncWindowSize = false; 
+        
+        syncUIState();
         renderKeys();
+        
+        // 執行多步同步，確保視窗尺寸完美貼合新的按鍵內容
+        [100, 300, 600].forEach(delay => setTimeout(() => syncWindowSize(true), delay));
     });
 
     // IMPROVED DRAGGING logic
@@ -818,6 +1113,10 @@ async function setupToolbar() {
 
     btnClose?.addEventListener('click', () => { invoke('force_exit'); });
     
+    // Key Editor Listeners
+    document.getElementById('btn-save-key')?.addEventListener('click', saveKeyLabels);
+    document.getElementById('btn-cancel-key')?.addEventListener('click', closeKeyEditor);
+
     syncUIState(); // 初始化圖示狀態
 }
 
@@ -865,6 +1164,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         isPinned = e.payload === true;
         syncUIState();
         await saveCurrentConfig();
+    });
+
+    // 監聽實體鍵盤的按鍵回饋
+    listen('physical_key', (e: any) => {
+        const { code, is_down } = e.payload;
+        // 使用 dataset.vk 去對應鍵盤上的按鍵，164與165為左右Alt，160與161為左右Shift等
+        document.querySelectorAll(`.key[data-vk="${code}"]`).forEach((el: Element) => {
+            const btn = el as HTMLElement;
+            if (is_down) {
+                btn.classList.add('physical-active');
+            } else {
+                btn.classList.remove('physical-active');
+            }
+        });
     });
 
     listen('focus_changed', (e: any) => {
@@ -919,8 +1232,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       }, 500); // 停止移動 0.5 秒後存檔
   });
 
-  // 監聽視窗縮放事件
+  // 監聽視窗縮放事件（加入程式化調整保護）
   window.addEventListener('resize', () => {
+      if (isProgrammaticResize) return;
+      
+      userAdjustedSize = true;
       updateAppScale();
       if (moveTimeout) clearTimeout(moveTimeout);
       moveTimeout = setTimeout(() => {
@@ -935,13 +1251,13 @@ window.addEventListener('dragover', (e) => e.preventDefault());
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 /**
- * 實作自定義 Tooltip 邏輯，避免 HWND_TOPMOST 視窗蓋住系統原生 Tooltip (v1.1.5)
+ * 實作自定義 Tooltip 邏輯，避免 HWND_TOPMOST 視窗蓋住系統原生 Tooltip
  */
 function setupTooltips() {
     const tooltip = document.getElementById('custom-tooltip');
     if (!tooltip) return;
 
-    // 清理所有原生 title 以防在 HWND_TOPMOST 視窗閃現系統提示 (v1.1.5)
+    // 清理所有原生 title 以防在 HWND_TOPMOST 視窗閃現系統提示
     const allWithTitle = document.querySelectorAll('[title]');
     allWithTitle.forEach(el => {
         const t = el.getAttribute('title');
@@ -951,7 +1267,7 @@ function setupTooltips() {
         }
     });
 
-    // 預先備份現有的 data-tip 作為基礎描述 (v1.1.6)
+    // 預先備份現有的 data-tip 作為基礎描述
     const allTips = document.querySelectorAll('[data-tip]');
     allTips.forEach(el => {
         if (!el.hasAttribute('data-tip-base')) {
@@ -986,7 +1302,7 @@ function setupTooltips() {
 }
 
 /**
- * 當資料更新時，立刻重新渲染畫面上正在顯示的 Tooltip (v1.1.6)
+ * 當資料更新時，立刻重新渲染畫面上正在顯示的 Tooltip
  */
 function refreshActiveTooltip() {
     const tooltip = document.getElementById('custom-tooltip');
