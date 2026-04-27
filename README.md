@@ -79,7 +79,33 @@
 2. 啟動開發者模式：`npm run dev`
 3. 建置發佈版本：`npx tauri build --no-bundle`
 
-*(註：發佈用的可攜式執行檔會自動輸出至 `src-tauri/target/release/rustosk.exe`。)*
+*(註：發佈用的可攜式執行檔位於 `release/rustosk.exe`。)*
+
+---
+
+## 📂 專案結構
+
+```text
+rust/
+├── src/                # 前端原始碼 (TypeScript + CSS)
+├── src-tauri/          # 後端原始碼 (Rust)
+│   ├── src/
+│   │   ├── system/     # Windows API 整合模組
+│   │   └── bin/        # 輔助工具 (如 UIA 測試)
+├── release/            # 發佈用執行檔
+└── index.html          # 前端進入點
+```
+
+---
+
+## 🔄 最近更新 (Recent Updates)
+
+### v1.3.51
+- **實體鍵盤同步**：全域監聽實體按鍵並即時高亮虛擬鍵盤。
+- **拖拽編輯強化**：實作按鍵「置換位置」邏輯，且交換時自動保留格位形狀 (Shape-Preserving Swap)。
+- **視覺錨點**：拖拽按鍵時，目標按鍵會顯示藍色高亮與加粗邊框，提升定位準確度。
+- **長按防誤觸**：優化長按邏輯，移動超過閾值自動取消長按計時器。
+- **介面即時同步**：切換佈局、主題或縮放時，畫布即時重繪，不再需要移動滑鼠觸發。
 
 ---
 

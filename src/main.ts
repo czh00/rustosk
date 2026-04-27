@@ -17,24 +17,34 @@ let isFirstBoot = false;
 let lastCapsStatus = false;
 let lastNumStatus = false;
 
-// Drag state for custom D&D
-let draggedKey: HTMLElement | null = null;
-let ghost: HTMLElement | null = null;
-let dragStartX = 0;
-let dragStartY = 0;
+/**
+ * Application State Definitions
+ */
 let currentHoverTarget: HTMLElement | null = null;
-// When true, skip the next automatic syncWindowSize() call (used to avoid
-// restoring window to default size right after exiting edit mode)
+// When true, skip the next automatic syncWindowSize() call
+// (e.g. restoring window to default size right after exiting edit mode)
 let skipNextSyncWindowSize = false;
 let userAdjustedSize = false;
 let isProgrammaticResize = false;
 let pinnedBackupBeforeEdit: boolean | null = null;
+let keyRects: { key: KeyDefinition, x: number, y: number, w: number, h: number, row: number, col: number }[] = [];
+let pressedKey: { key: KeyDefinition, rect: any } | null = null;
+let hoverKey: KeyDefinition | null = null;
+const physicalPressedCodes = new Set<number>();
+
 
 
 // Custom Key Overrides & Long Press
 let longPressTimer: any = null;
 let editingKeyPos: string | null = null;
-const LONG_PRESS_DURATION = 600;
+let dragStartX = 0;
+let dragStartY = 0;
+let dragSourcePos: { row: number, col: number } | null = null;
+let dragTargetPos: { row: number, col: number } | null = null;
+let dragCurrentX = 0;
+let dragCurrentY = 0;
+let isDraggingKey = false;
+const LONG_PRESS_DURATION = 800;
 
 
 interface OSKConfig {
@@ -77,7 +87,7 @@ async function initApp() {
             isDark = config.isDark !== undefined ? Boolean(config.isDark) : true;
             
             if (config.rX !== undefined && config.rY !== undefined) {
-                 // 暫存座標資訊，待視窗渲染穩定後套用
+                // Position data is handled in the sync section below
             } else {
                  isFirstBoot = true;
             }
@@ -99,12 +109,12 @@ async function initApp() {
     setupToolbar(); 
     setupLockPolling();
 
-    // 3. 套用配色並同步 UI
+    // 3. Apply appearance and theme
     applyTheme(isDark);
     syncUIState();
     updateKeyboardDynamicMod();
 
-    // 4. 同步視窗標籤與外部狀態
+    // 4. Sync metadata and backend state
     try {
         const window = getCurrentWindow();
         await window.setTitle(`rustosk`);
@@ -124,9 +134,9 @@ async function initApp() {
         await checkAndSyncLocks();
     } catch (e) { console.error("Sync state failed:", e); }
 
-    // 5. 視窗定位與尺寸同步
+    // Window positioning and sizing
     setTimeout(async () => {
-        const isReset = isFirstBoot; // 如果是重置，確保執行強制縮放 1.0 並重置 userAdjustedSize
+        const isReset = isFirstBoot;
         if (isReset) {
             userAdjustedSize = false;
             document.documentElement.style.setProperty('--app-scale', '1');
@@ -140,8 +150,19 @@ async function initApp() {
         if (config.rX !== undefined && config.rY !== undefined && !isFirstBoot) {
              await invoke('apply_relative_pos', { rx: config.rX, ry: config.rY });
         }
-        await syncWindowSize(isReset); // 如果是重置，強制同步
+        await syncWindowSize(isReset);
     }, 100);
+    
+    // Listen for physical keyboard events
+    listen('physical_key', (event: any) => {
+        const { code, is_down } = event.payload;
+        if (is_down) {
+            physicalPressedCodes.add(code);
+        } else {
+            physicalPressedCodes.delete(code);
+        }
+        renderKeys();
+    });
 }
 
 function syncUIState() {
@@ -274,286 +295,562 @@ async function saveCurrentConfig() {
     }
 }
 
-function getAutoFontSize(text: string, baseSize: number): string {
-    if (!text) return `${baseSize}px`;
-    const len = text.length;
-    if (len <= 2) return `${baseSize}px`;
-    if (len <= 4) return `${Math.floor(baseSize * 0.85)}px`;
-    if (len <= 6) return `${Math.floor(baseSize * 0.75)}px`;
-    return `${Math.floor(baseSize * 0.65)}px`;
+
+
+function getCanvasColors() {
+    const rootStyle = getComputedStyle(document.documentElement);
+    return {
+        bg: rootStyle.getPropertyValue('--bg-color').trim(),
+        keyBg: rootStyle.getPropertyValue('--key-bg').trim(),
+        keyActive: rootStyle.getPropertyValue('--key-active').trim(),
+        keyToggle: rootStyle.getPropertyValue('--key-toggle').trim(),
+        textMain: rootStyle.getPropertyValue('--text-main').trim(),
+        textSub: rootStyle.getPropertyValue('--text-sub').trim(),
+        border: rootStyle.getPropertyValue('--border-color').trim(),
+        accent: rootStyle.getPropertyValue('--accent').trim(),
+        colorTl: rootStyle.getPropertyValue('--color-tl').trim(),
+        colorTr: rootStyle.getPropertyValue('--color-tr').trim(),
+        colorBl: rootStyle.getPropertyValue('--color-bl').trim(),
+        colorBr: rootStyle.getPropertyValue('--color-br').trim(),
+        colorNum: rootStyle.getPropertyValue('--color-num').trim(),
+        keySpecialBg: rootStyle.getPropertyValue('--key-special-bg').trim(),
+        cornerOpacity: parseFloat(rootStyle.getPropertyValue('--corner-opacity') || "0.8"),
+    };
 }
 
 function renderKeys() {
-  const container = document.getElementById('keys-container');
-  if (!container || !currentLayout.length) return;
-  container.innerHTML = '';
+    const canvas = document.getElementById('keyboard-canvas') as HTMLCanvasElement;
+    if (!canvas || !currentLayout.length) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-  currentLayout.forEach((rowData: KeyDefinition[], rowIndex: number) => {
-    const rowDiv = document.createElement('div');
-    rowDiv.className = 'row';
+    const colors = getCanvasColors();
+    const dpr = window.devicePixelRatio || 1;
+    
+    const rowHeight = 48;
+    const gap = 5;
 
-    rowData.forEach((key, colIndex) => {
-      const btn = document.createElement('div');
-      let classes = ['key'];
-      if (key.special) classes.push('special');
-      if (key.class) classes.push(key.class);
-      if (isEditMode) classes.push('edit-target');
-      const isAlpha = key.label.length === 1 && /^[a-zA-Z]$/.test(key.label);
-      if (isAlpha) classes.push('alpha-key');
-      if (!isAlpha && key.sub) classes.push('symbol-key');
-      
-      // 標註角落標籤按鍵
-      if (key.sub || key.fn || key.zhPinyin || isAlpha) {
-          classes.push('has-corners');
-      }
-      
-      btn.className = classes.join(' ');
-      btn.dataset.vk = key.code.toString();
-      btn.dataset.pos = `${rowIndex},${colIndex}`;
+    // 1. 第一輪：計算實際需要的總寬度
+    let maxLayoutWidth = 0;
+    currentLayout.forEach((rowData) => {
+        let currentWUnit = 0;
+        rowData.forEach((key) => {
+            const wUnit = key.width || 1;
+            let x: number, w: number;
+            
+            if (isFull) {
+                const gridSpan = Math.round(wUnit * 12);
+                x = (currentWUnit / 270) * 1060;
+                w = (gridSpan / 270) * 1060;
+                currentWUnit += gridSpan;
+            } else {
+                x = Math.round(currentWUnit * 47);
+                w = Math.round((currentWUnit + wUnit) * 47) - x - 5;
+                currentWUnit += wUnit;
+            }
+            if (x + w > maxLayoutWidth) maxLayoutWidth = x + w;
+        });
+    });
 
-      const isShift = toggledModifiers.includes(0xA0) || toggledModifiers.includes(0xA1);
-      const isFn = toggledModifiers.includes(0xFE);
-      const isCaps = toggledModifiers.includes(0x14);
+    const baseWidth = maxLayoutWidth + 8; // 包含 4px * 2 的左右 Padding
+    document.documentElement.style.setProperty('--base-width', `${baseWidth}px`);
+    
+    // 計算總高度：按鍵區域 + 工具列 (約 41px) + 上下 Padding (8px)
+    const keysHeight = currentLayout.length * (rowHeight + gap) - gap;
+    const baseHeight = keysHeight + 41 + 8; 
+    document.documentElement.style.setProperty('--base-height', `${baseHeight}px`);
+    
+    let totalHeight = keysHeight;
+    
+    // 2. 設置 Canvas 物理像素大小
+    canvas.width = baseWidth * dpr;
+    canvas.height = (totalHeight + 2) * dpr;
+    canvas.style.width = `${baseWidth}px`;
+    canvas.style.height = `${totalHeight + 2}px`;
+    ctx.scale(dpr, dpr);
+    
+    keyRects = [];
+    ctx.clearRect(0, 0, baseWidth, totalHeight + 2);
 
-      const w = key.width || 1;
-      
-      // 設定按鈕尺寸與網格跨度
-      if (isFull) {
-          const gridSpan = Math.round(w * 12);
-          btn.style.gridColumn = `span ${gridSpan}`;
-          
-          if (key.height === 2) {
-              btn.style.gridRow = `${rowIndex + 1} / span 2`;
-          } else {
-              btn.style.gridRow = `${rowIndex + 1}`;
-          }
-          
-          btn.style.width = '100%'; 
-          btn.style.flex = 'none';
-      } else {
-          let widthPx = Math.round(w * 47) - 5;
-          btn.style.flex = `0 0 ${widthPx}px`;
-          btn.style.width = `${widthPx}px`;
-          btn.style.gridColumn = '';
-          btn.style.gridRow = '';
-      }
+    const isShift = toggledModifiers.includes(0xA0) || toggledModifiers.includes(0xA1);
+    const isFn = toggledModifiers.includes(0xFE);
+    const isCaps = toggledModifiers.includes(0x14);
+    const isNum = toggledModifiers.includes(0x90);
 
-      const isNum = toggledModifiers.includes(0x90);
-      let displayLabel = key.label;
-      let labelClass = '';
+    // 3. 第二輪：繪製
+    currentLayout.forEach((rowData, rowIndex) => {
+        let currentWUnit = 0;
+        const y = rowIndex * (rowHeight + gap);
 
-      // 功能鍵模式切換提示邏輯
-      if (key.code === 0x5D) { // 注音切換
-          displayLabel = isZhuyinMode ? 'En' : 'ㄅ';
-          labelClass = isZhuyinMode ? '' : 'color-zh';
-      } else if (key.code === 0xFE) { // Fn
-          labelClass = isFn ? '' : 'color-fn';
-      } else if (key.code === 0xA0 || key.code === 0xA1) { // Shift
-          labelClass = isShift ? '' : 'color-shift';
-      } else if (key.code === 0x90) { // NumLock
-          labelClass = isNum ? '' : 'color-num';
-      }
-      // 靜態模式下 TL corner 的大寫邏輯 (不管 Shift 都要顯示主要標籤)
-      // displayLabel 保持 key.label (大寫) 即可
+        rowData.forEach((key, colIndex) => {
+            const wUnit = key.width || 1;
+            let x: number, w: number;
+            
+            if (isFull) {
+                const gridSpan = Math.round(wUnit * 12);
+                x = (currentWUnit / 270) * 1060;
+                w = (gridSpan / 270) * 1060;
+                currentWUnit += gridSpan;
+            } else {
+                x = Math.round(currentWUnit * 47);
+                w = Math.round((currentWUnit + wUnit) * 47) - x - 5;
+                currentWUnit += wUnit;
+            }
+            
+            const h = (key.height === 2) ? (rowHeight * 2 + gap) : rowHeight;
 
+            const rect = { x, y, w, h };
+            keyRects.push({ key, ...rect, row: rowIndex, col: colIndex });
 
-      let tlStyle = `font-size: ${getAutoFontSize(displayLabel, 13)};`;
-      if (displayLabel.length >= 5) {
-          tlStyle += ' left: 4px;';
-      } else if (displayLabel.length >= 4) {
-          tlStyle += ' left: 4px; letter-spacing: -0.5px;';
-      } else if (displayLabel.length >= 3) {
-          tlStyle += ' left: 5px; letter-spacing: -0.25px;';
-      }
-      
-      let inner = '';
-      if (key.class?.includes('num-key')) {
-          // Numpad 翻轉邏輯：導覽鍵字串顯示於左上，數字顯示於右下
-          const navStr = key.sub || key.label;
-          const numStr = key.label;
-          let tlNavStyle = `font-size: ${getAutoFontSize(navStr, 13)};`;
-          if (navStr.length >= 3) tlNavStyle += ' left: 4px;';
-          inner += `<span class="tl" style="${tlNavStyle}">${navStr}</span>`;
-          inner += `<span class="br ${labelClass}" style="font-size: ${getAutoFontSize(numStr, 10)}">${numStr}</span>`;
-      } else {
-          const tlDisp = key.tl_ov?.display || displayLabel;
-          const trDisp = key.tr_ov?.display || key.sub;
-          const blDisp = key.bl_ov?.display || key.fn;
-          const brDisp = key.br_ov?.display || key.zhPinyin;
+            // 繪製按鍵背景
+            drawKey(ctx, key, rect, colors, isShift, isFn, isCaps, isNum);
+        });
+    });
 
-          inner = `<span class="tl ${labelClass}" style="font-size: ${getAutoFontSize(tlDisp, 13)}">${tlDisp}</span>`;
-          if (trDisp) inner += `<span class="tr" style="font-size: ${getAutoFontSize(trDisp, 10)}">${trDisp}</span>`;
-          if (blDisp) inner += `<span class="bl" style="font-size: ${getAutoFontSize(blDisp, 10)}">${blDisp}</span>`;
-          if (brDisp) inner += `<span class="br" style="font-size: ${getAutoFontSize(brDisp, 10)}">${brDisp}</span>`;
-      }
-      
-      // 中央動態標籤邏輯
-      let centerChar = key.label;
-      let centerClass = '';
-      
-      // 處理功能鍵本身的提示配色
-      if (key.code === 0x5D) { // 注音切換
-          centerChar = isZhuyinMode ? 'En' : 'ㄅ';
-          centerClass = isZhuyinMode ? '' : 'color-zh';
-      } else if (key.code === 0xFE) { // Fn 鍵本身
-          centerClass = isFn ? '' : 'color-fn';
-      } else if (key.code === 0xA0 || key.code === 0xA1) { // Shift 鍵本身
-          centerClass = isShift ? '' : 'color-shift';
-      } else if (key.code === 0x90) { // NumLock 鍵本身
-          centerClass = isNum ? '' : 'color-num';
-      }
+    if (!isProgrammaticResize) {
+        syncWindowSize();
+    }
 
-      if (isFn && key.fn) {
-          centerChar = key.fn;
-          if (centerClass === '') centerClass = 'color-fn';
-      } else if (isShift) {
-          centerChar = key.sub || (isAlpha ? key.label.toUpperCase() : key.label);
-          // 只有字母或具備符號的非功能鍵才套用 Shift 配色
-          const isSymbolKey = !isAlpha && key.sub && !key.class?.includes('num-key');
-          if (isAlpha || isSymbolKey) {
-              if (centerClass === '') centerClass = 'color-shift';
-          }
-      } else if (isZhuyinMode && key.zhPinyin) {
-          centerChar = key.zhPinyin;
-          if (centerClass === '') centerClass = 'color-zh';
-      } else if (isCaps && isAlpha) {
-          centerChar = key.label.toUpperCase();
-          centerClass = 'color-shift';
-      } else if (key.class?.includes('num-key')) {
-          // 數字鍵盤切換：當 NumLock 開啟時顯示數字，關閉時顯示導覽鍵
-          if (isNum) {
-              centerChar = key.label;
-              centerClass = 'color-num';
-          } else {
-              centerChar = key.sub || key.label;
-              centerClass = '';
-          }
-      } else if ((key.code >= 0x60 && key.code <= 0x69) || key.code === 0x6E) { // 僅數字與小數點
-          centerClass = 'color-num';
-      } else if (!key.special) {
-          centerChar = key.label.toLowerCase();
-      }
-
-      if (key.code === 0x5D) {
-          // 預覽型標籤
-          centerChar = (isZhuyinMode ? 'En' : 'ㄅ');
-      } else if (key.special && !isDynamic) {
-          // 靜態模式下的功能鍵處理
-          centerChar = displayLabel;
-      }
-
-      // --- Use Override Display for Center Label if applicable ---
-      if (isFn && key.bl_ov?.display) centerChar = key.bl_ov.display;
-      else if (isShift && key.tr_ov?.display) centerChar = key.tr_ov.display;
-      else if (isZhuyinMode && key.br_ov?.display) centerChar = key.br_ov.display;
-      else if (key.tl_ov?.display) centerChar = key.tl_ov.display;
-
-      inner += `<span class="center-label ${centerClass}" style="font-size: ${getAutoFontSize(centerChar, 24)}">${centerChar}</span>`;
-      btn.innerHTML = inner;
-
-      // 支援跨行渲染 (九宮格 + 與 Enter)
-      if (key.height === 2) {
-          btn.classList.add('span-2-rows');
-          btn.style.zIndex = '10';
-      }
-      
-      // 自動字體縮放檢查
-      requestAnimationFrame(() => {
-          const centerLabel = btn.querySelector('.center-label') as HTMLElement;
-          if (centerLabel) {
-              const maxW = btn.clientWidth - 8;
-              if (centerLabel.scrollWidth > maxW) {
-                  let fontSize = 24;
-                  while (centerLabel.scrollWidth > maxW && fontSize > 8) {
-                      fontSize--;
-                      centerLabel.style.fontSize = `${fontSize}px`;
-                  }
-              }
-          }
-      });
-
-      if (toggledModifiers.includes(key.code)) btn.classList.add('active-toggle');
-
-      btn.addEventListener('pointerdown', (e: PointerEvent) => {
-        if (!isEditMode) {
-          handleKeyPress(btn, key);
-          return;
-        }
-
-        // --- Long-press detection for Editing ---
-        if (longPressTimer) clearTimeout(longPressTimer);
-        longPressTimer = setTimeout(() => {
-            longPressTimer = null;
-            editingKeyPos = btn.dataset.pos || null;
-            openKeyEditor(key);
-            cleanupDrag(); // Cancel any ongoing drag
-        }, LONG_PRESS_DURATION);
-
-        const rect = btn.getBoundingClientRect();
-        dragStartX = e.clientX - rect.left;
-        dragStartY = e.clientY - rect.top;
-        draggedKey = btn;
-        btn.classList.add('dragging');
+    // 4. 繪製拖曳中的「幽靈按鍵」
+    if (isDraggingKey && dragSourcePos) {
+        const sourceKey = currentLayout[dragSourcePos.row][dragSourcePos.col];
+        const rect = canvas.getBoundingClientRect();
+        const appScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-scale') || "1");
         
-        ghost = btn.cloneNode(true) as HTMLElement;
-        ghost.classList.add('key-ghost');
-        ghost.style.width = rect.width + 'px';
-        ghost.style.height = rect.height + 'px';
-        ghost.style.left = rect.left + 'px';
-        ghost.style.top = rect.top + 'px';
-        document.body.appendChild(ghost);
-        btn.setPointerCapture(e.pointerId);
-      });
+        // 計算拖曳按鍵的中心位置與原始寬高
+        const sourceRect = keyRects.find(r => r.row === dragSourcePos?.row && r.col === dragSourcePos?.col);
+        if (sourceRect) {
+            const gx = (dragCurrentX - rect.left) / appScale - sourceRect.w / 2;
+            const gy = (dragCurrentY - rect.top) / appScale - sourceRect.h / 2;
+            
+            ctx.save();
+            ctx.globalAlpha = 0.6;
+            ctx.translate(gx, gy);
+            drawKey(ctx, sourceKey, { x: 0, y: 0, w: sourceRect.w, h: sourceRect.h }, colors, isShift, isFn, isCaps, isNum);
+            ctx.restore();
+        }
+    }
+}
 
-      btn.addEventListener('pointermove', (e: PointerEvent) => {
-        if (!isEditMode || !draggedKey || !ghost) return;
+function drawKey(ctx: CanvasRenderingContext2D, key: KeyDefinition, rect: any, colors: any, isShift: boolean, isFn: boolean, isCaps: boolean, isNum: boolean) {
+    if (key.class?.includes('invisible')) return;
 
-        // If moved significantly, cancel long-press
+    const isActive = pressedKey?.key === key || physicalPressedCodes.has(key.code);
+    const isToggled = toggledModifiers.includes(key.code);
+    const isHover = hoverKey === key;
+
+    // --- 背景與陰影 ---
+    ctx.save();
+    
+    // 如果是正在被拖曳的原始位置，則淡出
+    if (isDraggingKey && dragSourcePos) {
+        const sourceKey = currentLayout[dragSourcePos.row][dragSourcePos.col];
+        if (key === sourceKey) {
+            ctx.globalAlpha = 0.2;
+        }
+    }
+
+    ctx.beginPath();
+    const radius = 10;
+    // @ts-ignore
+    if (ctx.roundRect) {
+        // @ts-ignore
+        ctx.roundRect(rect.x, rect.y, rect.w, rect.h, radius);
+    } else {
+        ctx.rect(rect.x, rect.y, rect.w, rect.h);
+    }
+    
+    // 定義特殊按鍵判斷 (包含屬性、類別、或是空白鍵)
+    const isKeySpecial = key.special || key.class?.includes('special') || key.class?.includes('space');
+
+    // 判斷是否為當前拖曳的目標
+    let isDragTarget = false;
+    if (isDraggingKey && dragTargetPos) {
+        const targetKey = currentLayout[dragTargetPos.row][dragTargetPos.col];
+        if (key === targetKey) {
+            isDragTarget = true;
+        }
+    }
+
+    if (isActive) {
+        ctx.fillStyle = colors.keyActive;
+    } else if (isToggled) {
+        ctx.fillStyle = colors.keyToggle;
+    } else if (isHover || isDragTarget) {
+        ctx.fillStyle = isDragTarget ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.15)';
+    } else {
+        ctx.fillStyle = isKeySpecial ? colors.keySpecialBg : colors.keyBg;
+    }
+    
+    ctx.fill();
+    
+    // 邊框樣式
+    ctx.strokeStyle = (isToggled || (isEditMode && isHover) || isDragTarget) ? colors.accent : colors.border;
+    ctx.lineWidth = 1;
+    if (isDragTarget) {
+        ctx.lineWidth = 3;
+        ctx.setLineDash([]); // 實線高亮
+    } else if (isEditMode && isHover) {
+        ctx.setLineDash([5, 3]);
+        ctx.lineWidth = 2;
+    }
+    
+    ctx.stroke();
+    ctx.setLineDash([]); // 重置虛線
+    ctx.restore();
+
+    // --- 標籤繪製 ---
+    const isAlpha = key.label.length === 1 && /^[a-zA-Z]$/.test(key.label);
+    const centerChar = getCenterLabel(key, isShift, isFn, isCaps, isNum);
+    const centerColor = getLabelColor(key, centerChar, colors, isShift, isFn, isCaps, isNum);
+
+    if (isDynamic) {
+        // 動態模式：只繪製中央標籤
+        drawText(ctx, centerChar, rect.x + rect.w/2, rect.y + rect.h/2, centerColor, 24, "center", 1, rect.w - 10);
+    } else {
+        // 靜態模式：繪製四角標籤
+        const isArrowOrBS = [0x08, 0x25, 0x26, 0x27, 0x28].includes(key.code);
+
+        if (key.class?.includes('num-key')) {
+             const navStr = key.sub || key.label;
+             const numStr = key.label;
+             // NumLock 狀態切換亮度
+             drawText(ctx, navStr, rect.x + 6, rect.y + 16, colors.textMain, 13, "left", isNum ? 0.3 : 1);
+             drawText(ctx, numStr, rect.x + rect.w - 6, rect.y + rect.h - 6, colors.colorNum, 10, "right", isNum ? 1 : 0.3);
+        } else if (!isKeySpecial || isArrowOrBS) {
+            // 一般按鍵 或 方向鍵/倒退鍵：繪製四角
+            // 對於方向鍵/倒退鍵，我們不繪製 TL，因為它會顯示在中央
+            const tlDisp = isArrowOrBS ? null : (key.tl_ov?.display || key.label);
+            const trDisp = key.tr_ov?.display || key.sub;
+            const blDisp = key.bl_ov?.display || key.fn;
+            const brDisp = key.br_ov?.display || key.zhPinyin;
+
+            // 判斷當前模式下的高亮
+            let highlight = "tl";
+            if (isFn && key.fn) highlight = "bl";
+            else if (isShift) highlight = "tr";
+            else if (isZhuyinMode && key.zhPinyin) highlight = "br";
+            else if (isCaps && isAlpha) highlight = "tr";
+
+            if (tlDisp) drawText(ctx, tlDisp, rect.x + 6, rect.y + 16, colors.colorTl, 13, "left", highlight === "tl" ? 1 : 0.3);
+            if (trDisp) drawText(ctx, trDisp, rect.x + rect.w - 6, rect.y + 16, colors.colorTr, 10, "right", highlight === "tr" ? 1 : 0.3);
+            if (blDisp) drawText(ctx, blDisp, rect.x + 6, rect.y + rect.h - 6, colors.colorBl, 10, "left", highlight === "bl" ? 1 : 0.3);
+            if (brDisp) drawText(ctx, brDisp, rect.x + rect.w - 6, rect.y + rect.h - 6, colors.colorBr, 10, "right", highlight === "br" ? 1 : 0.3);
+        }
+        
+        // 特殊按鍵 (包含方向鍵/倒退鍵) 在靜態模式也要顯示中央標籤
+        if (isKeySpecial) {
+            // 對於方向鍵/倒退鍵，中央標籤始終顯示原始標籤 (白色)
+            const label = isArrowOrBS ? key.label : centerChar;
+            const color = isArrowOrBS ? colors.textMain : centerColor;
+            drawText(ctx, label, rect.x + rect.w/2, rect.y + rect.h/2, color, 24, "center", 1, rect.w - 10);
+        }
+    }
+}
+
+function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string, size: number, align: "left"|"right"|"center", opacity: number = 1, maxW?: number) {
+    if (!text) return;
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.textBaseline = "middle";
+    
+    let fontSize = size;
+    ctx.font = `bold ${fontSize}px Inter, sans-serif`;
+    
+    // 如果有指定最大寬度，則進行自動縮放
+    if (maxW) {
+        let metrics = ctx.measureText(text);
+        while (metrics.width > maxW && fontSize > 8) {
+            fontSize -= 1;
+            ctx.font = `bold ${fontSize}px Inter, sans-serif`;
+            metrics = ctx.measureText(text);
+        }
+    }
+    
+    ctx.fillText(text, x, y);
+    ctx.restore();
+}
+
+function getCenterLabel(key: KeyDefinition, isShift: boolean, isFn: boolean, isCaps: boolean, isNum: boolean): string {
+    const isAlpha = key.label.length === 1 && /^[a-zA-Z]$/.test(key.label);
+    
+    if (key.code === 0x5D) return isZhuyinMode ? 'En' : 'ㄅ';
+    if (isFn && key.fn) return key.fn;
+    if (isShift) return key.sub || (isAlpha ? key.label.toUpperCase() : key.label);
+    if (isZhuyinMode && key.zhPinyin) return key.zhPinyin;
+    if (isCaps && isAlpha) return key.label.toUpperCase();
+    if (key.class?.includes('num-key')) return isNum ? key.label : (key.sub || key.label);
+    
+    return key.special ? key.label : key.label.toLowerCase();
+}
+
+function getLabelColor(key: KeyDefinition, _char: string, colors: any, isShift: boolean, isFn: boolean, _isCaps: boolean, isNum: boolean): string {
+    // 1. 特殊功能鍵本體顏色 (對應其功能的角落顏色)
+    if (key.code === 0x5D && !isZhuyinMode) return colors.colorBr; // ㄅ 模式
+    if (key.code === 0xFE) return colors.colorBl; // Fn 鍵
+    if (key.code === 0xA0 || key.code === 0xA1) return colors.colorTr; // Shift 鍵
+    if (key.code === 0x14) return colors.colorTr; // Caps 鍵
+    if (key.code === 0x90) return colors.colorNum; // NumLock 鍵
+
+    // 2. 一般按鍵根據當前切換模式顯示的高亮色
+    if (isFn && key.fn) return colors.colorBl;
+    if (isShift) {
+        const isAlpha = key.label.length === 1 && /^[a-zA-Z]$/.test(key.label);
+        if (isAlpha || key.sub) return colors.colorTr;
+    }
+    if (isZhuyinMode && key.zhPinyin) return colors.colorBr;
+    if (_isCaps) {
+        const isAlpha = key.label.length === 1 && /^[a-zA-Z]$/.test(key.label);
+        if (isAlpha) return colors.colorTr;
+    }
+    if (key.class?.includes('num-key') && isNum) return colors.colorNum;
+    
+    // 3. 預設顏色
+    if (key.class?.includes('cyan-text')) return colors.accent;
+    return colors.textMain;
+}
+
+function initCanvasEvents() {
+    const canvas = document.getElementById('keyboard-canvas') as HTMLCanvasElement;
+    if (!canvas) return;
+
+    canvas.addEventListener('pointerdown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const appScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-scale') || "1");
+        const x = (e.clientX - rect.left) / appScale;
+        const y = (e.clientY - rect.top) / appScale;
+
+        const hit = keyRects.find(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+        if (hit) {
+            if (!isEditMode) {
+                pressedKey = { key: hit.key, rect: hit };
+                handleKeyPressDirect(hit.key);
+                renderKeys();
+            } else {
+                handleEditDragStart(e, hit);
+            }
+        }
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const appScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-scale') || "1");
+        const x = (e.clientX - rect.left) / appScale;
+        const y = (e.clientY - rect.top) / appScale;
+        
         if (longPressTimer) {
-            const rect = draggedKey.getBoundingClientRect();
-            const dx = Math.abs(e.clientX - (rect.left + dragStartX));
-            const dy = Math.abs(e.clientY - (rect.top + dragStartY));
-            if (dx > 5 || dy > 5) {
+            const dx = Math.abs(e.clientX - dragStartX);
+            const dy = Math.abs(e.clientY - dragStartY);
+            if (dx > 8 || dy > 8) { 
                 clearTimeout(longPressTimer);
                 longPressTimer = null;
+                
+                if (isEditMode && dragSourcePos) {
+                    isDraggingKey = true;
+                }
             }
         }
 
-        if (!longPressTimer) { // Only drag if NOT in a long-press wait
-            ghost.style.left = (e.clientX - dragStartX) + 'px';
-            ghost.style.top = (e.clientY - dragStartY) + 'px';
+        if (isDraggingKey) {
+            dragCurrentX = e.clientX;
+            dragCurrentY = e.clientY;
             
-            const target = getDropTarget(e.clientX, e.clientY);
-            document.querySelectorAll('.key').forEach(k => k.classList.remove('drag-over'));
-            if (target && target !== draggedKey) target.classList.add('drag-over');
+            const hit = keyRects.find(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+            if (hit) {
+                dragTargetPos = { row: hit.row, col: hit.col };
+            } else {
+                dragTargetPos = null;
+            }
+            
+            renderKeys();
+            return;
         }
-      });
 
-      btn.addEventListener('pointerup', (e: PointerEvent) => {
+        const hit = keyRects.find(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+        if (hit?.key !== hoverKey) {
+            hoverKey = hit?.key || null;
+            renderKeys();
+        }
+    });
+
+    window.addEventListener('pointerup', async (e) => {
+        if (isDraggingKey && dragSourcePos) {
+            const rect = canvas.getBoundingClientRect();
+            const appScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-scale') || "1");
+            const x = (e.clientX - rect.left) / appScale;
+            const y = (e.clientY - rect.top) / appScale;
+            
+            const target = keyRects.find(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+            if (target && (target.row !== dragSourcePos.row || target.col !== dragSourcePos.col)) {
+                const sourceSlot = currentLayout[dragSourcePos.row][dragSourcePos.col];
+                const targetSlot = currentLayout[target.row][target.col];
+                
+                // 備份原始形狀屬性
+                const sW = sourceSlot.width;
+                const sH = sourceSlot.height;
+                const tW = targetSlot.width;
+                const tH = targetSlot.height;
+                
+                // 交換內容
+                const tempSource = { ...sourceSlot };
+                currentLayout[dragSourcePos.row][dragSourcePos.col] = { ...targetSlot };
+                currentLayout[target.row][target.col] = tempSource;
+                
+                // 還原形狀屬性到所在位置
+                currentLayout[dragSourcePos.row][dragSourcePos.col].width = sW;
+                currentLayout[dragSourcePos.row][dragSourcePos.col].height = sH;
+                currentLayout[target.row][target.col].width = tW;
+                currentLayout[target.row][target.col].height = tH;
+                
+                await saveCurrentConfig();
+            }
+        }
+
+        if (pressedKey) {
+            handleKeyReleaseDirect(pressedKey.key);
+            pressedKey = null;
+        }
+
+        dragSourcePos = null;
+        dragTargetPos = null;
+        isDraggingKey = false;
         if (longPressTimer) {
             clearTimeout(longPressTimer);
             longPressTimer = null;
         }
+        renderKeys();
+    });
+}
 
-        if (!isEditMode) {
-            handleKeyRelease(btn, key);
+function handleKeyPressDirect(key: KeyDefinition) {
+    const isShift = toggledModifiers.includes(0xA0) || toggledModifiers.includes(0xA1);
+    const isFn = toggledModifiers.includes(0xFE);
+    
+    let override: CornerOverride | undefined;
+    if (isFn && key.bl_ov?.value) override = key.bl_ov;
+    else if (isShift && key.tr_ov?.value) override = key.tr_ov;
+    else if (isZhuyinMode && key.br_ov?.value) override = key.br_ov;
+    else if (key.tl_ov?.value) override = key.tl_ov;
+
+    if (override) {
+        const vks = parseKeyValue(override.value);
+        if (vks.length > 1) {
+            invoke('simulate_combination', { vkCodes: vks });
+            return;
+        } else if (vks.length === 1) {
+            invoke('simulate_key', { vkCode: vks[0], isKeyUp: false });
             return;
         }
-        if (!draggedKey) return;
-        const target = getDropTarget(e.clientX, e.clientY);
-        if (target && target !== draggedKey) {
-            swapKeys(draggedKey.dataset.pos!, target.dataset.pos!);
-        }
-        cleanupDrag();
-      });
+    }
 
-      rowDiv.appendChild(btn);
-    });
-    container.appendChild(rowDiv);
-  });
-  
-  syncWindowSize();
+    const isModifier = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0xFE].includes(key.code);
+    if (isModifier) {
+      const idx = toggledModifiers.indexOf(key.code);
+      if (idx > -1) { 
+        toggledModifiers.splice(idx, 1);
+        if (key.code !== 0xFE) {
+            if (key.code === 0xA4 || key.code === 0xA5) {
+                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: false });
+                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: true });
+            }
+            invoke('simulate_key', { vkCode: key.code, isKeyUp: true });
+        }
+      } else { 
+        toggledModifiers.push(key.code);
+        if (key.code !== 0xFE) invoke('simulate_key', { vkCode: key.code, isKeyUp: false });
+      }
+      updateKeyboardDynamicMod();
+      return;
+    }
+
+    if (key.code === 0x5D) {
+       invoke('simulate_key', { vkCode: 0xA0, isKeyUp: false });
+       setTimeout(() => invoke('simulate_key', { vkCode: 0xA0, isKeyUp: true }), 50);
+       return;
+    }
+
+    let targetVk = key.code;
+    if (isFn && key.fn) {
+        if (key.fn.startsWith('F')) {
+            const fNum = parseInt(key.fn.substring(1));
+            targetVk = 0x6F + fNum;
+        } else if (fnKeyMap[key.fn]) {
+            targetVk = fnKeyMap[key.fn];
+        }
+    }
+
+    invoke('simulate_key', { vkCode: targetVk, isKeyUp: false });
 }
+
+async function handleKeyReleaseDirect(key: KeyDefinition) {
+    const isModifier = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0xFE].includes(key.code);
+    if (!isModifier) {
+      if (key.code === 0x5D) return; 
+
+      const isShift = toggledModifiers.includes(0xA0) || toggledModifiers.includes(0xA1);
+      const isFn = toggledModifiers.includes(0xFE);
+      let override: CornerOverride | undefined;
+      if (isFn && key.bl_ov?.value) override = key.bl_ov;
+      else if (isShift && key.tr_ov?.value) override = key.tr_ov;
+      else if (isZhuyinMode && key.br_ov?.value) override = key.br_ov;
+      else if (key.tl_ov?.value) override = key.tl_ov;
+
+      if (override) {
+          const vks = parseKeyValue(override.value);
+          if (vks.length === 1) {
+              await invoke('simulate_key', { vkCode: vks[0], isKeyUp: true });
+              return;
+          }
+      }
+
+      let targetVk = key.code;
+      if (isFn && key.fn) {
+          if (key.fn.startsWith('F')) {
+              const fNum = parseInt(key.fn.substring(1));
+              targetVk = 0x6F + fNum;
+          } else if (fnKeyMap[key.fn]) {
+              targetVk = fnKeyMap[key.fn];
+          }
+      }
+
+      await invoke('simulate_key', { vkCode: targetVk, isKeyUp: true });
+      if (key.code === 0x90 || key.code === 0x14) await checkAndSyncLocks();
+      
+      const isAltTab = key.code === 0x09 && (toggledModifiers.includes(0xA4) || toggledModifiers.includes(0xA5));
+      for (const mod of toggledModifiers) {
+         if (mod !== 0xFE && mod !== 0x14 && mod !== 0x90) {
+            if (isAltTab && (mod === 0xA4 || mod === 0xA5)) continue;
+            invoke('simulate_key', { vkCode: mod, isKeyUp: true });
+         }
+      }
+      if (!isAltTab) invoke('release_all_modifiers');
+      for (let i = toggledModifiers.length - 1; i >= 0; i--) {
+          const modInfo = toggledModifiers[i];
+          if (modInfo !== 0x14 && modInfo !== 0x90 && modInfo !== 0xFE) {
+              if (isAltTab && (modInfo === 0xA4 || modInfo === 0xA5)) continue;
+              toggledModifiers.splice(i, 1);
+          }
+      }
+      updateKeyboardDynamicMod();
+    }
+}
+
+function handleEditDragStart(e: PointerEvent, hit: any) {
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    dragSourcePos = { row: hit.row, col: hit.col };
+    isDraggingKey = false;
+    
+    if (longPressTimer) clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        editingKeyPos = `${hit.row},${hit.col}`;
+        openKeyEditor(hit.key);
+    }, LONG_PRESS_DURATION);
+}
+
 
 const fnKeyMap: Record<string, number> = {
     '⇞': 0x21, // Page Up
@@ -656,228 +953,9 @@ async function saveKeyLabels() {
     closeKeyEditor();
 }
 
-async function handleKeyPress(btn: HTMLElement, key: KeyDefinition) {
-    btn.classList.add('active');
 
-    // --- Check for Overrides first ---
-    const isShift = toggledModifiers.includes(0xA0) || toggledModifiers.includes(0xA1);
-    const isFn = toggledModifiers.includes(0xFE);
-    
-    let override: CornerOverride | undefined;
-    if (isFn && key.bl_ov?.value) override = key.bl_ov;
-    else if (isShift && key.tr_ov?.value) override = key.tr_ov;
-    else if (isZhuyinMode && key.br_ov?.value) override = key.br_ov;
-    else if (key.tl_ov?.value) override = key.tl_ov;
 
-    if (override) {
-        const vks = parseKeyValue(override.value);
-        if (vks.length > 1) {
-            await invoke('simulate_combination', { vkCodes: vks });
-            return;
-        } else if (vks.length === 1) {
-            invoke('simulate_key', { vkCode: vks[0], isKeyUp: false });
-            return;
-        }
-    }
 
-    const isModifier = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0xFE].includes(key.code);
-    if (isModifier) {
-      const idx = toggledModifiers.indexOf(key.code);
-      if (idx > -1) { 
-        toggledModifiers.splice(idx, 1);
-        btn.classList.remove('active-toggle');
-        if (key.code !== 0xFE) {
-            if (key.code === 0xA4 || key.code === 0xA5) {
-                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: false });
-                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: true });
-            }
-            invoke('simulate_key', { vkCode: key.code, isKeyUp: true });
-        }
-      } else { 
-        toggledModifiers.push(key.code);
-        btn.classList.add('active-toggle');
-        if (key.code !== 0xFE) invoke('simulate_key', { vkCode: key.code, isKeyUp: false });
-      }
-      updateKeyboardDynamicMod();
-      return;
-    }
-
-    if (key.code === 0x5D) {
-       invoke('simulate_key', { vkCode: 0xA0, isKeyUp: false });
-       setTimeout(() => invoke('simulate_key', { vkCode: 0xA0, isKeyUp: true }), 50);
-       return;
-    }
-
-    let targetVk = key.code;
-    if (isFn && key.fn) {
-        if (key.fn.startsWith('F')) {
-            const fNum = parseInt(key.fn.substring(1));
-            targetVk = 0x6F + fNum;
-        } else if (fnKeyMap[key.fn]) {
-            targetVk = fnKeyMap[key.fn];
-        }
-    }
-
-    invoke('simulate_key', { vkCode: targetVk, isKeyUp: false });
-}
-
-async function handleKeyRelease(btn: HTMLElement, key: KeyDefinition) {
-    btn.classList.remove('active');
-    const isModifier = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0xFE].includes(key.code);
-    if (!isModifier) {
-      if (key.code === 0x5D) return; 
-
-      // --- Handle Release for Overrides ---
-      const isShift = toggledModifiers.includes(0xA0) || toggledModifiers.includes(0xA1);
-      const isFn = toggledModifiers.includes(0xFE);
-      let override: CornerOverride | undefined;
-      if (isFn && key.bl_ov?.value) override = key.bl_ov;
-      else if (isShift && key.tr_ov?.value) override = key.tr_ov;
-      else if (isZhuyinMode && key.br_ov?.value) override = key.br_ov;
-      else if (key.tl_ov?.value) override = key.tl_ov;
-
-      if (override) {
-          const vks = parseKeyValue(override.value);
-          if (vks.length > 1) {
-              return; 
-          } else if (vks.length === 1) {
-              await invoke('simulate_key', { vkCode: vks[0], isKeyUp: true });
-              return;
-          }
-      }
-
-      let targetVk = key.code;
-      if (isFn && key.fn) {
-          if (key.fn.startsWith('F')) {
-              const fNum = parseInt(key.fn.substring(1));
-              targetVk = 0x6F + fNum;
-          } else if (fnKeyMap[key.fn]) {
-              targetVk = fnKeyMap[key.fn];
-          }
-      }
-
-      await invoke('simulate_key', { vkCode: targetVk, isKeyUp: true });
-      
-      if (key.code === 0x90 || key.code === 0x14) {
-          await checkAndSyncLocks();
-      }
-      
-      const isAltTab = key.code === 0x09 && (toggledModifiers.includes(0xA4) || toggledModifiers.includes(0xA5));
-
-      for (const mod of toggledModifiers) {
-         if (mod !== 0xFE && mod !== 0x14 && mod !== 0x90) {
-            if (isAltTab && (mod === 0xA4 || mod === 0xA5)) continue;
-            if (mod === 0xA4 || mod === 0xA5) {
-                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: false });
-                invoke('simulate_key', { vkCode: 0xFF, isKeyUp: true });
-            }
-            invoke('simulate_key', { vkCode: mod, isKeyUp: true });
-         }
-      }
-      
-      if (!isAltTab) {
-          invoke('release_all_modifiers');
-      }
-
-      for (let i = toggledModifiers.length - 1; i >= 0; i--) {
-          const modInfo = toggledModifiers[i];
-          if (modInfo !== 0x14 && modInfo !== 0x90 && modInfo !== 0xFE) {
-              if (isAltTab && (modInfo === 0xA4 || modInfo === 0xA5)) continue;
-              toggledModifiers.splice(i, 1);
-          }
-      }
-      
-      document.querySelectorAll('.active-toggle').forEach((el: any) => {
-          const vk = el.dataset.vk;
-          if (vk !== "20" && vk !== "144" && vk !== "254") {
-              if (isAltTab && (vk === "164" || vk === "165")) return;
-              el.classList.remove('active-toggle');
-          }
-      });
-      updateKeyboardDynamicMod();
-    }
-}
-
-function getDropTarget(x: number, y: number): HTMLElement | null {
-    if (ghost) ghost.style.pointerEvents = 'none';
-    const elements = document.elementsFromPoint(x, y);
-    for (const el of elements) {
-        if (el.classList.contains('key') && !el.classList.contains('key-ghost')) return el as HTMLElement;
-    }
-    return null;
-}
-
-function cleanupDrag() {
-    if (draggedKey) draggedKey.classList.remove('dragging');
-    draggedKey = null;
-    if (ghost) ghost.remove();
-    ghost = null;
-    document.querySelectorAll('.key').forEach(k => k.classList.remove('drag-over'));
-}
-
-async function swapKeys(pos1: string, pos2: string) {
-    const [r1, c1] = pos1.split(',').map(Number);
-    const [r2, c2] = pos2.split(',').map(Number);
-    const k1 = currentLayout[r1][c1];
-    const k2 = currentLayout[r2][c2];
-
-    // 分離「功能/內容」屬性與「物理/佈局」屬性
-    const getContent = (k: any) => ({
-        code: k.code,
-        label: k.label,
-        sub: k.sub,
-        fn: k.fn,
-        zhPinyin: k.zhPinyin,
-        tl_ov: k.tl_ov,
-        tr_ov: k.tr_ov,
-        bl_ov: k.bl_ov,
-        br_ov: k.br_ov
-    });
-
-    const getLayout = (k: any) => ({
-        width: k.width,
-        height: k.height,
-        special: k.special // 通常 special 跟隨佈局 (如 invisible)
-    });
-
-    // 類別處理：
-    // 功能性類別 (隨內容走)
-    const functionalClasses = ['num-key', 'cyan-text', 'mode-key', 'fn-key', 'alpha-key', 'symbol-key'];
-    // 佈局性類別 (留在原地)
-    const layoutClasses = ['invisible', 'space', 'enter'];
-
-    const splitClass = (cls: string = "") => {
-        const parts = cls.split(' ').filter(c => c && c !== 'key' && c !== 'dragging' && c !== 'drag-over' && c !== 'edit-target');
-        return {
-            functional: parts.filter(p => functionalClasses.includes(p)),
-            layout: parts.filter(p => layoutClasses.includes(p))
-        };
-    };
-
-    const content1 = getContent(k1);
-    const content2 = getContent(k2);
-    const l1 = getLayout(k1);
-    const l2 = getLayout(k2);
-    const cls1 = splitClass(k1.class);
-    const cls2 = splitClass(k2.class);
-
-    // 套用交換：新的 k1 = k2 的內容 + k1 的佈局
-    currentLayout[r1][c1] = {
-        ...content2,
-        ...l1,
-        class: ['key', ...cls1.layout, ...cls2.functional].filter(Boolean).join(' ')
-    };
-
-    // 新的 k2 = k1 的內容 + k2 的佈局
-    currentLayout[r2][c2] = {
-        ...content1,
-        ...l2,
-        class: ['key', ...cls2.layout, ...cls1.functional].filter(Boolean).join(' ')
-    };
-    
-    renderKeys();
-    await saveCurrentConfig();
-}
 
 function updateKeyboardDynamicMod() {
     syncUIState(); // 確保 UI 容器狀態與變數同步
@@ -902,10 +980,6 @@ function updateKeyboardDynamicMod() {
     // 同步渲染
     renderKeys();
     
-    // 計算縮放前先更新佈局基準寬度
-    const baseWidth = isFull ? 1078 : 723;
-    document.documentElement.style.setProperty('--base-width', `${baseWidth}px`);
-    
     updateAppScale();
 }
 
@@ -923,8 +997,9 @@ function updateAppScale() {
     // 使用標準 Web API 的 window.innerWidth，這已是邏輯像素
     const logicalWidth = window.innerWidth;
     
-    // 基準寬度
-    const baseWidth = isFull ? 1078 : 723;
+    // 基準寬度 (由 renderKeys 動態計算並存在 CSS 變數中)
+    const baseWidthStr = getComputedStyle(document.documentElement).getPropertyValue('--base-width');
+    const baseWidth = parseFloat(baseWidthStr) || (isFull ? 1078 : 723);
     const scale = logicalWidth / baseWidth;
     
     document.documentElement.style.setProperty('--app-scale', scale.toString());
@@ -946,15 +1021,17 @@ async function syncWindowSize(force = false) {
         // 讀取目前的縮放比例，用於維持按鍵視覺大小一致
         const currentScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-scale') || "1");
         
-        // 使用 scrollHeight 取得鍵盤內容真實高度 (scrollHeight 是未經 CSS 縮放的原始高度)
-        const naturalHeight = kb.scrollHeight;
+        // 使用佈局基準高度 (由 renderKeys 動態計算)
+        const baseHeightStr = getComputedStyle(document.documentElement).getPropertyValue('--base-height');
+        const naturalHeight = parseFloat(baseHeightStr) || kb.scrollHeight;
         
-        // 使用佈局基準寬度
-        const naturalWidth = isFull ? 1078 : 723;
+        // 使用佈局基準寬度 (由 renderKeys 動態計算)
+        const baseWidthStr = getComputedStyle(document.documentElement).getPropertyValue('--base-width');
+        const naturalWidth = parseFloat(baseWidthStr) || (isFull ? 1078 : 723);
         
         // 計算實際視窗尺寸，採比例維持型同步，確保切換版面後按鍵視覺尺寸一致
-        const width = Math.ceil(naturalWidth * currentScale);
-        const height = Math.ceil(naturalHeight * currentScale) + 4; 
+        const width = Math.ceil(naturalWidth * currentScale); 
+        const height = Math.ceil(naturalHeight * currentScale); 
         
         // 標記目前正在程式調整大小，防止觸發 userAdjustedSize
         isProgrammaticResize = true;
@@ -999,9 +1076,6 @@ async function setupToolbar() {
         // 切換佈局時，獲取目前的 scale 並標記為 userAdjustedSize 以維持比例
         const currentScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-scale') || "1");
         userAdjustedSize = true; 
-        
-        const baseWidth = isFull ? 1078 : 723;
-        document.documentElement.style.setProperty('--base-width', `${baseWidth}px`);
         
         syncUIState(); 
         renderKeys();
@@ -1089,13 +1163,15 @@ async function setupToolbar() {
 
     // IMPROVED DRAGGING logic
     const toolbar = document.getElementById('toolbar');
-    toolbar?.addEventListener('mousedown', async (e) => {
-        // Don't drag if clicking buttons or sliders
+    toolbar?.addEventListener('pointerdown', async (evt) => {
+        const e = evt as PointerEvent;
         const target = e.target as HTMLElement;
-        if (target.tagName === 'BUTTON' || target.tagName === 'INPUT' || target.closest('button')) return;
-        
-        await invoke('start_custom_drag');
-        // 移除這裡的 setTimeout，改用全域監聽 move 事件
+        // 允許滑鼠左鍵 / 觸控 / 手寫筆按下即可觸發拖移，但避免在按鈕或輸入元件上啟動
+        const isPointerAllowed = (e.button === 0) || e.pointerType === 'touch' || e.pointerType === 'pen';
+        if (!isPointerAllowed || target.closest('button') || target.closest('input')) return;
+
+        // 直接呼叫後端強化的拖曳邏輯 (已針對 Windows 觸控優化)
+        invoke('start_custom_drag');
     });
     
     
@@ -1103,6 +1179,7 @@ async function setupToolbar() {
         isDark = !isDark;
         applyTheme(isDark);
         syncUIState();
+        renderKeys();
         await saveCurrentConfig();
     });
 
@@ -1125,32 +1202,39 @@ function applyTheme(dark: boolean) {
     if (dark) {
         root.style.setProperty('--bg-color', 'rgb(15, 23, 42)');
         root.style.setProperty('--key-bg', 'rgba(255, 255, 255, 0.08)');
+        root.style.setProperty('--key-special-bg', 'rgba(255, 255, 255, 0.04)');
+        root.style.setProperty('--key-active', 'rgba(56, 189, 248, 0.4)');
+        root.style.setProperty('--key-toggle', 'rgba(56, 189, 248, 0.2)');
         root.style.setProperty('--text-main', '#f8fafc');
         root.style.setProperty('--text-sub', '#94a3b8');
         root.style.setProperty('--border-color', 'rgba(255, 255, 255, 0.1)');
+        root.style.setProperty('--accent', '#38bdf8');
         
-        // 恢復深色模式原始高對比色彩
         root.style.setProperty('--color-tl', '#f8fafc'); 
         root.style.setProperty('--color-tr', '#38bdf8'); 
         root.style.setProperty('--color-bl', '#4ade80'); 
         root.style.setProperty('--color-br', '#fbbf24'); 
+        root.style.setProperty('--color-num', '#bae6fd');
         
         root.style.setProperty('--corner-opacity', '0.8');
         root.style.setProperty('--corner-weight', '600');
     } else {
-        root.style.setProperty('--bg-color', 'rgb(240, 240, 240)');
-        root.style.setProperty('--key-bg', 'rgba(255, 255, 255, 0.6)');
-        root.style.setProperty('--text-main', '#1e293b');
+        root.style.setProperty('--bg-color', '#f1f5f9');
+        root.style.setProperty('--key-bg', '#ffffff');
+        root.style.setProperty('--key-special-bg', '#e2e8f0');
+        root.style.setProperty('--key-active', 'rgba(2, 132, 199, 0.3)');
+        root.style.setProperty('--key-toggle', 'rgba(2, 132, 199, 0.15)');
+        root.style.setProperty('--text-main', '#0f172a');
         root.style.setProperty('--text-sub', '#475569'); 
-        root.style.setProperty('--border-color', 'rgba(0, 0, 0, 0.1)');
+        root.style.setProperty('--border-color', 'rgba(0, 0, 0, 0.08)');
+        root.style.setProperty('--accent', '#0284c7');
         
-        // 淺色模式高對比角落色彩
-        root.style.setProperty('--color-tl', '#1e293b'); 
+        root.style.setProperty('--color-tl', '#0f172a'); 
         root.style.setProperty('--color-tr', '#0369a1'); 
         root.style.setProperty('--color-bl', '#15803d'); 
         root.style.setProperty('--color-br', '#b45309'); 
+        root.style.setProperty('--color-num', '#0369a1');
         
-        // 淺色模式專屬：靜態標籤增強
         root.style.setProperty('--corner-opacity', '1.0');
         root.style.setProperty('--corner-weight', '700');
     }
@@ -1158,6 +1242,7 @@ function applyTheme(dark: boolean) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     await initApp();
+    initCanvasEvents();
 
     // 監聽來自 Rust 的外部狀態改變要求 (例如系統列選單操作)
     listen('backend_pin_updated', async (e: any) => {
@@ -1167,17 +1252,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 監聽實體鍵盤的按鍵回饋
-    listen('physical_key', (e: any) => {
-        const { code, is_down } = e.payload;
-        // 使用 dataset.vk 去對應鍵盤上的按鍵，164與165為左右Alt，160與161為左右Shift等
-        document.querySelectorAll(`.key[data-vk="${code}"]`).forEach((el: Element) => {
-            const btn = el as HTMLElement;
-            if (is_down) {
-                btn.classList.add('physical-active');
-            } else {
-                btn.classList.remove('physical-active');
-            }
-        });
+    listen('physical_key', (_e: any) => {
+        // 在 Canvas 模式下，我們需要根據 code 尋找對應的按鍵並重繪
+        // 為了簡單起見，直接全域重繪
+        renderKeys();
     });
 
     listen('focus_changed', (e: any) => {
@@ -1214,13 +1292,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     renderKeys();
                 }
             }
-        } catch (err) {
-            // 回退舊版字串處理 (若有意外)
-            const toolbarLeft = document.querySelector('.toolbar-left');
-            if (toolbarLeft) {
-                toolbarLeft.textContent = `${e.payload}`;
-            }
-        }
+        } catch (err) { }
     });
 
   // 監聽視窗移動事件，實作防抖動自動存檔
@@ -1238,6 +1310,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       userAdjustedSize = true;
       updateAppScale();
+      renderKeys(); // 視窗縮放時重繪 Canvas
       if (moveTimeout) clearTimeout(moveTimeout);
       moveTimeout = setTimeout(() => {
           saveCurrentConfig();
