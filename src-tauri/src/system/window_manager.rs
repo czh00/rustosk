@@ -5,18 +5,19 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWLP_WNDPROC, HWND_TOPMOST,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WM_MOUSEACTIVATE, MA_NOACTIVATE, CallWindowProcW, ShowWindow, SW_SHOWNOACTIVATE,
-    SW_SHOWNORMAL, SW_HIDE, IsWindowVisible, WM_NCHITTEST, WM_SIZING, FindWindowW,
+    SW_SHOWNORMAL, SW_HIDE, IsWindowVisible, WM_NCHITTEST, FindWindowW,
     HTLEFT, HTRIGHT, HTTOP, HTBOTTOM, HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION,
-    WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT, WMSZ_TOPRIGHT, WMSZ_BOTTOM, WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT,
-    GWL_STYLE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WM_SYSCOMMAND, SetPropW
+    GWL_STYLE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WM_SYSCOMMAND, SetPropW, HTCLIENT
 };
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 const WM_EXITSIZEMOVE: u32 = 0x0232;
-const WM_NCLBUTTONDOWN: u32 = 0x00A1;
 const WM_NCLBUTTONDBLCLK: u32 = 0x00A3;
+const SC_MOVE: usize = 0xF010;
+const SC_SIZE: usize = 0xF000;
 const SC_MAXIMIZE: usize = 0xF030;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::core::PCWSTR;
+// Pointer API currently unused but available
 use crate::system::input_detector::update_osk_state;
 use std::fs;
 use std::path::PathBuf;
@@ -28,6 +29,7 @@ pub static IS_PINNED: AtomicBool = AtomicBool::new(true);
 pub static IS_MANUALLY_HIDDEN: AtomicBool = AtomicBool::new(false);
 static PREV_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 pub static IS_DYNAMIC_DISPLAY: AtomicBool = AtomicBool::new(false);
+pub static IS_TEMPORARY_NOT_TOPMOST: AtomicBool = AtomicBool::new(false);
 static TARGET_ASPECT_RATIO: AtomicU64 = AtomicU64::new(0); // Bits of f64
 
 #[tauri::command]
@@ -128,26 +130,110 @@ pub fn set_dynamic_display(enabled: bool) {
 }
 
 #[tauri::command]
+pub fn set_topmost(enabled: bool) {
+    IS_TEMPORARY_NOT_TOPMOST.store(!enabled, Ordering::Relaxed);
+    std::thread::spawn(|| {
+        update_osk_state();
+    });
+}
+
+#[tauri::command]
 pub fn resize_window(window: WebviewWindow, width: f64, height: f64) {
     let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
 }
 
+// 手動拖曳與縮放的共用邏輯
+fn start_manual_interaction(hwnd: HWND, direction: Option<&'static str>) {
+    let hwnd_ptr = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let hwnd = windows::Win32::Foundation::HWND(hwnd_ptr as _);
+        unsafe {
+            let mut start_pt = POINT::default();
+            if GetCursorPos(&mut start_pt).is_err() { return; }
+            
+            let mut start_rect = RECT::default();
+            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut start_rect);
+            
+            let ratio_bits = TARGET_ASPECT_RATIO.load(Ordering::Relaxed);
+            let ratio = if ratio_bits != 0 { Some(f64::from_bits(ratio_bits)) } else { None };
+
+            let offset_x = start_pt.x - start_rect.left;
+            let offset_y = start_pt.y - start_rect.top;
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            loop {
+                // 檢查左鍵是否仍按下 (支援滑鼠與大多數觸控)
+                if GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000 == 0 {
+                    break;
+                }
+                
+                let mut pt = POINT::default();
+                if GetCursorPos(&mut pt).is_ok() {
+                    if let Some(dir) = direction {
+                        let mut new_rect = start_rect;
+                        let dx = pt.x - start_pt.x;
+                        let dy = pt.y - start_pt.y;
+                        
+                        match dir {
+                            "left" => { new_rect.left += dx; }
+                            "right" => { new_rect.right += dx; }
+                            "top" => { new_rect.top += dy; }
+                            "bottom" => { new_rect.bottom += dy; }
+                            "topleft" => { new_rect.left += dx; new_rect.top += dy; }
+                            "topright" => { new_rect.right += dx; new_rect.top += dy; }
+                            "bottomleft" => { new_rect.left += dx; new_rect.bottom += dy; }
+                            "bottomright" => { new_rect.right += dx; new_rect.bottom += dy; }
+                            _ => {}
+                        }
+                        
+                        let mut width = (new_rect.right - new_rect.left) as f64;
+                        let mut height = (new_rect.bottom - new_rect.top) as f64;
+                        
+                        if let Some(r) = ratio {
+                            match dir {
+                                "left" | "right" | "bottomleft" | "bottomright" | "topleft" | "topright" => {
+                                    height = width / r;
+                                    if dir.contains("top") {
+                                        new_rect.top = new_rect.bottom - height as i32;
+                                    } else {
+                                        new_rect.bottom = new_rect.top + height as i32;
+                                    }
+                                }
+                                "top" | "bottom" => {
+                                    width = height * r;
+                                    new_rect.right = new_rect.left + width as i32;
+                                }
+                                _ => {}
+                            }
+                        }
+                        
+                        let _ = SetWindowPos(hwnd, HWND::default(), new_rect.left, new_rect.top, 
+                                             new_rect.right - new_rect.left, new_rect.bottom - new_rect.top, 
+                                             SWP_NOACTIVATE | SWP_NOZORDER);
+                    } else {
+                        let _ = SetWindowPos(hwnd, HWND::default(), pt.x - offset_x, pt.y - offset_y, 0, 0, 
+                                             SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            keep_hwnd_in_screen(hwnd);
+        }
+    });
+}
+
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SWP_NOZORDER};
+use windows::Win32::Foundation::POINT;
+
 #[tauri::command]
-pub fn start_custom_drag(window: WebviewWindow) {
-    let hwnd_ptr = match window.hwnd() {
-        Ok(handle) => handle.0 as isize,
-        Err(_) => return,
-    };
-    let hwnd = HWND(hwnd_ptr as _);
-    unsafe {
-        let _ = windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
-        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-            hwnd,
-            WM_NCLBUTTONDOWN,
-            WPARAM(HTCAPTION as usize),
-            LPARAM(0),
-        );
-    }
+pub fn start_poll_drag(_window: WebviewWindow, _pointer_id: u32) {
+    // 現在改由 wndproc 自動處理，保留此函式以相容舊程式碼
+}
+
+#[tauri::command]
+pub fn start_poll_resize(_window: WebviewWindow, _direction: String, _pointer_id: u32) {
+    // 現在改由 wndproc 自動處理，保留此函式以相容舊程式碼
 }
 
 #[tauri::command]
@@ -195,32 +281,45 @@ pub fn show_osk_no_activate() {
     if hwnd_ptr != 0 {
         unsafe {
             let hwnd = HWND(hwnd_ptr as _);
+            let is_temp_no_top = IS_TEMPORARY_NOT_TOPMOST.load(Ordering::Relaxed);
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let is_currently_topmost = (ex_style as u32 & WS_EX_TOPMOST.0) != 0;
+            let should_be_topmost = !is_temp_no_top;
             
             // 視窗顯示邏輯：若目前不可見，執行置頂與顯示指令
             if !IsWindowVisible(hwnd).as_bool() {
                 let _ = SetWindowPos(
                     hwnd,
-                    HWND(-2 as _),
+                    HWND(-2 as _), // HWND_NOTOPMOST
                     0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
-                let _ = SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
+                
+                if !is_temp_no_top {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST,
+                        0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                }
             } else {
-                // 若已經可見，僅確保置頂屬性，避免觸發全域 Z-order 重算以減少閃爍
-                let _ = SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
+                // 若已經可見，僅在置頂屬性不符合預期時才調用 SetWindowPos
+                // 這能避免在暫時取消置頂期間，因輪詢而不斷將視窗提至非置頂層的最前端，導致遮擋調色盤
+                if is_currently_topmost != should_be_topmost {
+                    let target_z = if is_temp_no_top { HWND(-2 as _) } else { HWND_TOPMOST };
+                    let _ = SetWindowPos(
+                        hwnd,
+                        target_z,
+                        0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                }
             }
             
-            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            if !IsWindowVisible(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
         }
     }
 }
@@ -257,8 +356,8 @@ unsafe extern "system" fn osk_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         let mut rect = RECT::default();
         let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect);
         
-        let border = 10; // 稍微縮減邊緣偵測範圍以貼合本體
-        let corner = 16; // 稍微縮減角落判定範圍
+        let border = 10;
+        let corner = 20;
         
         let is_left = x < rect.left + border;
         let is_right = x >= rect.right - border;
@@ -276,38 +375,51 @@ unsafe extern "system" fn osk_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         if is_bottom_corner && is_left_corner { return LRESULT(HTBOTTOMLEFT as isize); }
         if is_bottom_corner && is_right_corner { return LRESULT(HTBOTTOMRIGHT as isize); }
         
-        // 判定邊緣
+        // 判定邊緣 (10px 範圍)
         if is_left { return LRESULT(HTLEFT as isize); }
         if is_right { return LRESULT(HTRIGHT as isize); }
         if is_top { return LRESULT(HTTOP as isize); }
         if is_bottom { return LRESULT(HTBOTTOM as isize); }
+        
+        // 判定標題列按鈕區 (右側約 300px 範圍，高度 24px)
+        // 回傳 HTCLIENT 讓 WebView2 (及 touch) 能正常點擊按鈕
+        if y < rect.top + 24 && x > rect.right - 300 {
+            return LRESULT(HTCLIENT as i32 as isize);
+        }
+
+        // 其他區域由系統處理 (包括 -webkit-app-region: drag)
     }
 
-    if msg == WM_SIZING {
-        let ratio_bits = TARGET_ASPECT_RATIO.load(Ordering::Relaxed);
-        if ratio_bits != 0 {
-            let ratio = f64::from_bits(ratio_bits);
-            let rect = &mut *(lparam.0 as *mut RECT);
-            let width = (rect.right - rect.left) as f64;
-            let height = (rect.bottom - rect.top) as f64;
-            
-            match wparam.0 as u32 {
-                WMSZ_LEFT | WMSZ_RIGHT | WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT | WMSZ_TOPLEFT | WMSZ_TOPRIGHT => {
-                    // Update height based on width
-                    let new_height = width / ratio;
-                    if wparam.0 as u32 == WMSZ_TOPLEFT || wparam.0 as u32 == WMSZ_TOPRIGHT || wparam.0 as u32 == WMSZ_TOP {
-                        rect.top = rect.bottom - new_height as i32;
-                    } else {
-                        rect.bottom = rect.top + new_height as i32;
-                    }
-                }
-                WMSZ_TOP | WMSZ_BOTTOM => {
-                    // Update width based on height
-                    let new_width = height * ratio;
-                    rect.right = rect.left + new_width as i32;
-                }
-                _ => {}
+    if msg == WM_SYSCOMMAND {
+        let cmd = wparam.0 & 0xFFF0;
+        match cmd as usize {
+            SC_MOVE => {
+                // 攔截系統拖曳，改用自定義輪詢以避免鬼影框
+                start_manual_interaction(hwnd, None);
+                return LRESULT(0);
             }
+            SC_SIZE => {
+                // 攔截系統縮放
+                // 注意：SC_SIZE 的具體方向在 wparam 低位，但這裡簡化處理
+                // 實際上大部份縮放會由下面的 WM_NCLBUTTONDOWN 觸發
+            }
+            _ => {}
+        }
+    }
+
+    const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+    if msg == WM_NCLBUTTONDOWN {
+        let hit_test = wparam.0 as i32;
+        match hit_test {
+            h if h == HTLEFT as i32 => { start_manual_interaction(hwnd, Some("left")); return LRESULT(0); }
+            h if h == HTRIGHT as i32 => { start_manual_interaction(hwnd, Some("right")); return LRESULT(0); }
+            h if h == HTTOP as i32 => { start_manual_interaction(hwnd, Some("top")); return LRESULT(0); }
+            h if h == HTBOTTOM as i32 => { start_manual_interaction(hwnd, Some("bottom")); return LRESULT(0); }
+            h if h == HTTOPLEFT as i32 => { start_manual_interaction(hwnd, Some("topleft")); return LRESULT(0); }
+            h if h == HTTOPRIGHT as i32 => { start_manual_interaction(hwnd, Some("topright")); return LRESULT(0); }
+            h if h == HTBOTTOMLEFT as i32 => { start_manual_interaction(hwnd, Some("bottomleft")); return LRESULT(0); }
+            h if h == HTBOTTOMRIGHT as i32 => { start_manual_interaction(hwnd, Some("bottomright")); return LRESULT(0); }
+            _ => {}
         }
     }
     

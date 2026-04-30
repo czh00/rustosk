@@ -20,7 +20,6 @@ pub fn run() {
             system::keyboard_simulator::simulate_combination,
             system::keyboard_simulator::release_all_modifiers,
             system::keyboard_simulator::get_locks,
-            system::window_manager::start_custom_drag, 
             system::window_manager::force_exit,
             system::window_manager::open_sos,
             system::window_manager::set_pinned,
@@ -33,7 +32,10 @@ pub fn run() {
             system::window_manager::set_manually_hidden,
             system::window_manager::reset_config,
             system::window_manager::set_dynamic_display,
-            system::window_manager::update_aspect_ratio
+            system::window_manager::update_aspect_ratio,
+            system::window_manager::set_topmost,
+            system::window_manager::start_poll_drag,
+            system::window_manager::start_poll_resize
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

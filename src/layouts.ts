@@ -17,6 +17,12 @@ export interface KeyDefinition {
   tr_ov?: CornerOverride;
   bl_ov?: CornerOverride;
   br_ov?: CornerOverride;
+  bgColor?: string;
+  tlColor?: string;
+  trColor?: string;
+  blColor?: string;
+  brColor?: string;
+  borderColor?: string;
 }
 
 export const compactLayout: KeyDefinition[][] = [
