@@ -132,6 +132,7 @@ body.editor-window {
   border-bottom: 1px solid var(--border-color);
   margin-bottom: 1px;
   touch-action: none;
+  height: 32px;
 }
 
 .toolbar-left {
@@ -151,6 +152,7 @@ body.editor-window {
 }
 
 .toolbar-left {
+  -webkit-app-region: drag;
   font-size: 10px;
   color: var(--text-sub);
   letter-spacing: 0.05em;
@@ -160,12 +162,10 @@ body.editor-window {
   justify-content: center;
   align-items: flex-start;
   gap: 0;
-  min-width: 120px;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: 350px;
+  overflow: visible;
   line-height: 1.2;
+  height: 30px;
 }
 
 .toolbar-right {
@@ -984,7 +984,8 @@ body.editor-window {
   margin-bottom: 2px;
 }
 
-.editor-section input {
+.editor-section input,
+.editor-section textarea {
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -993,9 +994,19 @@ body.editor-window {
   font-size: 13px;
   outline: none;
   transition: all 0.2s;
+  font-family: inherit;
 }
 
-.editor-section input:focus {
+.editor-section textarea {
+  resize: none;
+  min-height: 34px;
+  overflow-y: hidden;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.editor-section input:focus,
+.editor-section textarea:focus {
   border-color: var(--accent);
   background: rgba(0, 0, 0, 0.4);
   box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
@@ -1063,4 +1074,14 @@ body.editor-window {
 
 .key.space .tl {
   display: none !important;
+}
+
+/* Help box styling */
+.help-info-box code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: var(--accent);
+  font-family: monospace;
+  font-weight: 600;
 }

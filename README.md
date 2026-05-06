@@ -77,31 +77,46 @@
 ### 執行步驟
 1. 安裝依賴：`npm install`
 2. 啟動開發者模式：`npm run dev`
-3. 建置發佈版本：`npx tauri build --no-bundle`
+3. 建置發佈版本：`npm run tauri build`
 
-*(註：發佈用的可攜式執行檔位於 `release/rustosk.exe`。)*
+*(註：發佈用的可攜式執行檔位於 `src-tauri/target/release/rustosk.exe`。)*
 
 ---
 
-## 📂 專案結構
+## 📂 專案結構 (File Structure)
 
 ```text
 rust/
-├── src/                # 前端原始碼 (TypeScript + CSS)
+├── src/                # 前端原始碼 (UI 與 互動邏輯)
+│   ├── main.ts         # 主要進入點 (Canvas 繪製與事件處理)
+│   ├── layouts.ts      # 鍵盤佈局定義 (60% / 100%)
+│   └── style.css       # 視覺樣式與動畫
 ├── src-tauri/          # 後端原始碼 (Rust)
 │   ├── src/
-│   │   ├── system/     # Windows API 整合模組
-│   │   └── bin/        # 輔助工具 (如 UIA 測試)
-├── release/            # 發佈用執行檔
-└── index.html          # 前端進入點
+│   │   ├── system/     # Windows API 深度整合核心
+│   │   │   ├── window_manager.rs   # 視窗行為、拖拽、縮放與重置邏輯
+│   │   │   ├── input_detector.rs   # 焦點追蹤與輸入法偵測
+│   │   │   ├── keyboard_hook.rs    # 全域按鍵攔截與錄製掛鉤
+│   │   │   └── keyboard_simulator.rs # 模擬按鍵發送
+│   │   └── main.rs     # Tauri 指令入口與執行緒管理
+│   ├── tauri.conf.json # Tauri 建置設定 (版本、權限、打包)
+│   └── Cargo.toml      # Rust 依賴管理 (windows-rs, chrono 等)
+└── index.html          # 前端進入點 (含編輯器模態框定義)
 ```
 
 ---
 
 ## 🔄 最近更新 (Recent Updates)
 
+### v1.5.0 (New)
+- **系統原生重置確認**：改用系統級對話框進行重置確認，提供更明確的風險提示。
+- **自動配置備份系統**：在重置或刪除設定檔前，自動將現有 `osk.ini` 備份為時間戳記格式（例：`osk_260506145000.ini`）。
+- **強化版巨集編輯器**：支援自動高度調整的輸入框，輸入長巨集或檔案路徑時能自動換行，不再被截斷。
+- **高可靠性焦點追蹤**：結合進程名稱驗證與 `IS_RUSTOSK_WINDOW` 視窗屬性標記，大幅提升對 Alt+Tab 等系統快捷鍵的錄製精準度。
+- **零延遲錄製技術**：優化錄製期間的按鍵攔截邏輯，確保錄製過程流暢且不影響系統修飾鍵狀態。
+
 ### v1.4.0
-- **按鍵顏色設定**：可以自訂單獨按鍵配色或在設定中點其他按鍵套用目前設定中的顏色。
+- **按鍵顏色設定**：支援自訂單獨按鍵配色，並可快速套用配色方案至其他按鍵或全域主題。
 
 ---
 

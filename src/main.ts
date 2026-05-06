@@ -1,4 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
+import { open, ask } from '@tauri-apps/plugin-dialog';
+
 import { listen, emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -17,6 +19,10 @@ let isEditMode = false;
 let isFirstBoot = false;
 let lastCapsStatus = false;
 let lastNumStatus = false;
+
+// 全域錄製狀態 (用於編輯器)
+let recordingTargetId: string | null = null;
+let lastRecordTime = 0;
 
 /**
  * Application State Definitions
@@ -76,10 +82,11 @@ async function initApp() {
         const isReset = sessionStorage.getItem('reset_pending') === 'true';
         if (isReset) {
             sessionStorage.removeItem('reset_pending');
+            // 重置偵測：恢復預設 1.0 比例
             isFirstBoot = true;
             userAdjustedSize = false;
             document.documentElement.style.setProperty('--app-scale', '1');
-            console.log("Reset detected, forcing first boot defaults");
+
         }
 
         const savedData = await invoke<string>('load_config');
@@ -116,7 +123,8 @@ async function initApp() {
             }
         }
     } catch (e) {
-        console.log("No config, loading defaults");
+        // 無現有設定，載入預設值
+
         isFirstBoot = true;
     }
 
@@ -178,6 +186,20 @@ async function initApp() {
             physicalPressedCodes.delete(code);
         }
         renderKeys();
+    });
+
+    // 監聽巨集執行狀態 (用於診斷)
+    listen('macro_status', (e: any) => {
+        const infoEl = document.getElementById('info-macro');
+        if (infoEl) {
+            infoEl.textContent = e.payload;
+            // 狀態完成後，一小段時間清空狀態
+            if (e.payload.includes('完畢')) {
+                setTimeout(() => {
+                    infoEl.textContent = '';
+                }, 2000);
+            }
+        }
     });
 }
 
@@ -383,9 +405,9 @@ function renderKeys() {
     const baseWidth = maxLayoutWidth + 8; // 包含 4px * 2 的左右 Padding
     document.documentElement.style.setProperty('--base-width', `${baseWidth}px`);
 
-    // 計算總高度：按鍵區域 + 工具列 (約 21px) + 上下 Padding (8px)
+    // 計算總高度：按鍵區域 + 工具列 (約 34px) + 上下 Padding (8px)
     const keysHeight = currentLayout.length * (rowHeight + gap) - gap;
-    const baseHeight = keysHeight + 21 + 8;
+    const baseHeight = keysHeight + 34 + 8;
     document.documentElement.style.setProperty('--base-height', `${baseHeight}px`);
 
     let totalHeight = keysHeight;
@@ -571,37 +593,63 @@ function drawKey(ctx: CanvasRenderingContext2D, key: KeyDefinition, rect: any, c
         if (key.class?.includes('num-key')) {
             const navStr = key.sub || key.label;
             const numStr = key.label;
+            const qX1 = rect.x + rect.w * 0.25;
+            const qX2 = rect.x + rect.w * 0.75;
+            const qY1 = rect.y + rect.h * 0.25;
+            const qY2 = rect.y + rect.h * 0.75;
             // NumLock 狀態切換亮度
-            drawText(ctx, navStr, rect.x + 6, rect.y + 16, key.tlColor || colors.colorTl, 13, "left", isNum ? 0.3 : 1);
-            drawText(ctx, numStr, rect.x + rect.w - 6, rect.y + rect.h - 6, key.trColor || colors.colorNum, 10, "right", isNum ? 1 : 0.3);
-        } else if (!isKeySpecial || isArrowOrBS) {
-            // 一般按鍵 或 方向鍵/倒退鍵：繪製四角
-            // 對於方向鍵/倒退鍵，我們不繪製 TL，因為它會顯示在中央
-            const tlDisp = isArrowOrBS ? null : (key.tl_ov?.display || key.label);
-            const trDisp = key.tr_ov?.display || key.sub;
-            const blDisp = key.bl_ov?.display || key.fn;
-            const brDisp = key.br_ov?.display || key.zhPinyin;
+            drawText(ctx, navStr, qX1, qY1, key.tlColor || colors.colorTl, 20, "center", isNum ? 0.3 : 1, rect.w / 2 - 4);
+            drawText(ctx, numStr, qX2, qY2, key.trColor || colors.colorNum, 20, "center", isNum ? 1 : 0.3, rect.w / 2 - 4);
+        } else {
+            // 一般按鍵、特殊鍵、方向鍵等：決定四個角落要顯示的內容
+            const tlDisp = key.tl_ov?.display || key.label || '';
+            const trDisp = key.tr_ov?.display || key.sub || '';
+            const blDisp = key.bl_ov?.display || key.fn || '';
+            const brDisp = key.br_ov?.display || key.zhPinyin || '';
 
-            // 判斷當前模式下的高亮
-            let highlight = "tl";
-            if (isFn && key.fn) highlight = "bl";
-            else if (isShift) highlight = "tr";
-            else if (isZhuyinMode && key.zhPinyin) highlight = "br";
-            else if (isCaps && isAlpha) highlight = "tr";
+            // 判斷是否「只有」左上角有內容 (包含 value)
+            const hasTr = !!trDisp || !!key.tr_ov?.value;
+            const hasBl = !!blDisp || !!key.bl_ov?.value;
+            const hasBr = !!brDisp || !!key.br_ov?.value;
+            const onlyTl = !!tlDisp && !hasTr && !hasBl && !hasBr;
 
-            if (tlDisp) drawText(ctx, tlDisp, rect.x + 6, rect.y + 16, key.tlColor || colors.colorTl, 13, "left", highlight === "tl" ? 1 : 0.3);
-            if (trDisp) drawText(ctx, trDisp, rect.x + rect.w - 6, rect.y + 16, key.trColor || colors.colorTr, 10, "right", highlight === "tr" ? 1 : 0.3);
-            if (blDisp) drawText(ctx, blDisp, rect.x + 6, rect.y + rect.h - 6, key.blColor || colors.colorBl, 10, "left", highlight === "bl" ? 1 : 0.3);
-            if (brDisp) drawText(ctx, brDisp, rect.x + rect.w - 6, rect.y + rect.h - 6, key.brColor || colors.colorBr, 10, "right", highlight === "br" ? 1 : 0.3);
-        }
+            if (onlyTl && !isArrowOrBS) {
+                // 只有設定左上角，顯示在中央 (保持原有特殊鍵或單一功能按鍵的行為)
+                drawText(ctx, centerChar, rect.x + rect.w / 2, rect.y + rect.h / 2, centerColor, 24, "center", 1, rect.w - 10);
+            } else {
+                // 有多個角落設定，分別畫在對應角落
+                // 判斷當前模式下的高亮
+                let highlight = "tl";
+                if (isFn && hasBl) highlight = "bl";
+                else if (isShift && hasTr) highlight = "tr";
+                else if (isZhuyinMode && hasBr) highlight = "br";
+                else if (isCaps && isAlpha) highlight = "tr";
 
-        // 特殊按鍵 (包含方向鍵/倒退鍵) 在靜態模式也要顯示中央標籤
-        if (isKeySpecial) {
-            // 對於方向鍵/倒退鍵，我們優先顯示當前狀態對應的標籤 (Fn 時顯示 Fn 功能)
-            const label = centerChar;
-            // 單一功能的顏色一律與左上角同一組色 (TL)
-            // 但如果當前標籤不是主標籤 (例如 Fn 觸發)，則使用對應的顏色
-            drawText(ctx, label, rect.x + rect.w / 2, rect.y + rect.h / 2, centerColor, 24, "center", 1, rect.w - 10);
+                if (isArrowOrBS) {
+                    // 方向鍵/倒退鍵在中央顯示當前狀態的圖示，角落顯示其他設定
+                    drawText(ctx, centerChar, rect.x + rect.w / 2, rect.y + rect.h / 2, centerColor, 24, "center", 1, rect.w - 10);
+                    // 畫其他角落 (但不畫 TL)
+                    const qX2 = rect.x + rect.w * 0.75;
+                    const qY1 = rect.y + rect.h * 0.25;
+                    const qX1 = rect.x + rect.w * 0.25;
+                    const qY2 = rect.y + rect.h * 0.75;
+                    if (trDisp) drawText(ctx, trDisp, qX2, qY1, key.trColor || colors.colorTr, 20, "center", highlight === "tr" ? 1 : 0.3, rect.w / 2 - 4);
+                    if (blDisp) drawText(ctx, blDisp, qX1, qY2, key.blColor || colors.colorBl, 20, "center", highlight === "bl" ? 1 : 0.3, rect.w / 2 - 4);
+                    if (brDisp) drawText(ctx, brDisp, qX2, qY2, key.brColor || colors.colorBr, 20, "center", highlight === "br" ? 1 : 0.3, rect.w / 2 - 4);
+                } else {
+                    const qX1 = rect.x + rect.w * 0.25;
+                    const qX2 = rect.x + rect.w * 0.75;
+                    const qY1 = rect.y + rect.h * 0.25;
+                    const qY2 = rect.y + rect.h * 0.75;
+                    const cSize = 20;
+                    const maxW = rect.w / 2 - 4;
+
+                    if (tlDisp) drawText(ctx, tlDisp, qX1, qY1, key.tlColor || colors.colorTl, cSize, "center", highlight === "tl" ? 1 : 0.3, maxW);
+                    if (trDisp) drawText(ctx, trDisp, qX2, qY1, key.trColor || colors.colorTr, cSize, "center", highlight === "tr" ? 1 : 0.3, maxW);
+                    if (blDisp) drawText(ctx, blDisp, qX1, qY2, key.blColor || colors.colorBl, cSize, "center", highlight === "bl" ? 1 : 0.3, maxW);
+                    if (brDisp) drawText(ctx, brDisp, qX2, qY2, key.brColor || colors.colorBr, cSize, "center", highlight === "br" ? 1 : 0.3, maxW);
+                }
+            }
         }
     }
 }
@@ -635,13 +683,27 @@ function getCenterLabel(key: KeyDefinition, isShift: boolean, isFn: boolean, isC
     const isAlpha = key.label.length === 1 && /^[a-zA-Z]$/.test(key.label);
 
     if (key.code === 0x5D) return isZhuyinMode ? 'En' : 'ㄅ';
-    if (isFn && key.fn) return key.fn;
-    if (isShift) return key.sub || (isAlpha ? key.label.toUpperCase() : key.label);
-    if (isZhuyinMode && key.zhPinyin) return key.zhPinyin;
+    
+    if (isFn && (key.bl_ov?.value || key.bl_ov?.display || key.fn)) {
+        return key.bl_ov?.display || key.fn || '';
+    }
+    if (isShift && (key.tr_ov?.value || key.tr_ov?.display || key.sub || isAlpha)) {
+        return key.tr_ov?.display || key.sub || (isAlpha ? key.label.toUpperCase() : key.label);
+    }
+    if (isZhuyinMode && (key.br_ov?.value || key.br_ov?.display || key.zhPinyin)) {
+        return key.br_ov?.display || key.zhPinyin || '';
+    }
     if (isCaps && isAlpha) return key.label.toUpperCase();
-    if (key.class?.includes('num-key')) return isNum ? key.label : (key.sub || key.label);
+    
+    if (key.class?.includes('num-key')) {
+        if (isNum) {
+            return key.tl_ov?.display || key.label;
+        } else {
+            return key.tr_ov?.display || key.sub || key.label;
+        }
+    }
 
-    return key.special ? key.label : key.label.toLowerCase();
+    return key.tl_ov?.display || (key.special ? key.label : key.label.toLowerCase());
 }
 
 function getLabelColor(key: KeyDefinition, char: string, colors: any, isShift: boolean, isFn: boolean, isCaps: boolean, isNum: boolean): string {
@@ -654,14 +716,18 @@ function getLabelColor(key: KeyDefinition, char: string, colors: any, isShift: b
     if (key.code === 0x90) return key.trColor || colors.colorNum; // NumLock
     if (key.code === 0x5D) return key.brColor || colors.colorBr; // Mode Toggle (ㄅ/En)
 
+    const blTarget = key.bl_ov?.display || key.fn || '';
+    const trTarget = key.tr_ov?.display || key.sub || (isAlpha ? key.label.toUpperCase() : key.label);
+    const brTarget = key.br_ov?.display || key.zhPinyin || '';
+
     // 1. 處理自定義多角顏色
-    if (isFn && key.fn && char === key.fn) return key.blColor || colors.colorBl;
-    if (isShift && (isAlpha || key.sub) && char === (key.sub || (isAlpha ? key.label.toUpperCase() : key.label))) {
+    if (isFn && (key.bl_ov?.value || key.bl_ov?.display || key.fn) && char === blTarget) return key.blColor || colors.colorBl;
+    if (isShift && (key.tr_ov?.value || key.tr_ov?.display || key.sub || isAlpha) && char === trTarget) {
         // 確保 Shift 不影響數字九宮格的自定義主顏色
         if (key.class?.includes('num-key')) return key.tlColor || colors.colorTl;
         return key.trColor || colors.colorTr;
     }
-    if (isZhuyinMode && key.zhPinyin && char === key.zhPinyin) return key.brColor || colors.colorBr;
+    if (isZhuyinMode && (key.br_ov?.value || key.br_ov?.display || key.zhPinyin) && char === brTarget) return key.brColor || colors.colorBr;
     if (isCaps && isAlpha && char === key.label.toUpperCase()) return key.trColor || colors.colorTr;
 
     // 2. 處理數字九宮格狀態 (確保導航與數字模式顏色一致)
@@ -674,8 +740,8 @@ function getLabelColor(key: KeyDefinition, char: string, colors: any, isShift: b
     }
 
     // 3. 處理無多角屬性的功能鍵
-    // 透過比對 sub 與 fn 來判斷是否需要套用角落顏色
-    const hasMultipleCorners = (key.sub || key.fn || key.zhPinyin);
+    // 透過比對 overrides 判斷是否需要套用角落顏色
+    const hasMultipleCorners = (key.sub || key.fn || key.zhPinyin || key.tr_ov || key.bl_ov || key.br_ov);
     if (isSpecial && !hasMultipleCorners) {
         if (key.code === 0x5D && !isZhuyinMode) return key.brColor || colors.colorBr;
         return key.tlColor || colors.colorTl;
@@ -683,12 +749,12 @@ function getLabelColor(key: KeyDefinition, char: string, colors: any, isShift: b
 
     // 4. 套用全域預設顏色與高亮邏輯
     if (isFn) {
-        if (key.fn && char === key.fn) return key.blColor || colors.colorBl;
-        if (!key.fn) return key.tlColor || colors.colorTl;
+        if ((key.bl_ov?.value || key.bl_ov?.display || key.fn) && char === blTarget) return key.blColor || colors.colorBl;
+        if (!key.fn && !key.bl_ov?.display && !key.bl_ov?.value) return key.tlColor || colors.colorTl;
         return colors.colorDim;
     }
-    if (isShift && (isAlpha || key.sub)) return colors.colorTr;
-    if (isZhuyinMode && key.zhPinyin) return colors.colorBr;
+    if (isShift && (key.tr_ov?.value || key.tr_ov?.display || key.sub || isAlpha)) return colors.colorTr;
+    if (isZhuyinMode && (key.br_ov?.value || key.br_ov?.display || key.zhPinyin)) return colors.colorBr;
     if (isCaps && isAlpha) return colors.colorTr;
 
     // 5. 預設顏色
@@ -861,6 +927,9 @@ function handleKeyPressDirect(key: KeyDefinition) {
         } else if (vks.length === 1) {
             invoke('simulate_key', { vkCode: vks[0], isKeyUp: false });
             return;
+        } else if (override.value.trim().length > 0) {
+            invoke('execute_app', { cmd: override.value.trim() });
+            return;
         }
     }
 
@@ -920,6 +989,9 @@ async function handleKeyReleaseDirect(key: KeyDefinition) {
             const vks = parseKeyValue(override.value);
             if (vks.length === 1) {
                 await invoke('simulate_key', { vkCode: vks[0], isKeyUp: true });
+                return;
+            } else if (vks.length > 1 || override.value.trim().length > 0) {
+                // If it's a combination or a command, do nothing on release
                 return;
             }
         }
@@ -989,6 +1061,7 @@ const MODIFIER_NAME_MAP: Record<string, number> = {
 
 function parseKeyValue(input: string): number[] {
     if (!input) return [];
+    if (input.includes(',')) return []; // 巨集格式，跳過單鍵解析交由 execute_app 處理
     // Handle combinations like "Ctrl+C"
     if (input.includes('+')) {
         return input.split('+').map(part => {
@@ -1032,6 +1105,13 @@ function getDefaultKeyValue(key: KeyDefinition, corner: 'tl' | 'tr' | 'bl' | 'br
 let editorWindow: WebviewWindow | null = null;
 let currentlyEditingKey: any = null;
 
+/** 自動調整高度以符合內容 */
+const syncTextareaHeight = (el: HTMLTextAreaElement) => {
+
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+};
+
 listen('request-key', () => {
     if (currentlyEditingKey) {
         emit('load-key', currentlyEditingKey);
@@ -1044,7 +1124,7 @@ async function openKeyEditor(key: KeyDefinition) {
     const isCaps = toggledModifiers.includes(0x14);
     const isNum = toggledModifiers.includes(0x90);
 
-    currentlyEditingKey = { key, isDark, isDynamic, modifiers: { isShift, isFn, isCaps, isNum } };
+    currentlyEditingKey = { key, isDark, isDynamic, isFull, modifiers: { isShift, isFn, isCaps, isNum } };
     
     // 初始化快速套用資料
     const defaultBg = isDark ? '#1e293b' : '#ffffff';
@@ -1282,7 +1362,14 @@ async function setupToolbar() {
     });
 
     btnReset?.addEventListener('click', async () => {
-        if (confirm("確定要將所有佈局、位置與透明度恢復為預設值嗎？")) {
+        const confirmed = await ask("確定要將所有按鍵佈局、視窗位置與透明度恢復為預設值嗎？\n這將會重新啟動程式，且現有的設定檔將會被自動備份。", {
+            title: '重置警告',
+            kind: 'warning',
+        });
+
+        if (confirmed) {
+
+
             try {
                 // 1. 清除 Rust 端的實體設定檔 (osk.ini)
                 await invoke('reset_config');
@@ -1747,6 +1834,237 @@ async function initEditorWindowMode() {
         if (closeBtn) {
             closeBtn.style.display = 'none';
         }
+
+        // 綁定編輯視窗內的 SOS 按鈕
+        const btnEditorSos = document.getElementById('btn-editor-sos');
+        if (btnEditorSos) {
+            btnEditorSos.addEventListener('click', async () => {
+                await invoke('release_all_modifiers');
+                invoke('open_sos');
+            });
+        }
+
+        // 綁定編輯視窗內的 Help 按鈕
+        const btnEditorHelp = document.getElementById('btn-editor-help');
+        const helpBox = document.getElementById('editor-help-box');
+        if (btnEditorHelp && helpBox) {
+            btnEditorHelp.addEventListener('click', () => {
+                const isHidden = helpBox.style.display === 'none';
+                helpBox.style.display = isHidden ? 'block' : 'none';
+                btnEditorHelp.classList.toggle('active-tool', isHidden);
+            });
+        }
+
+        // --- 錄製邏輯變數 ---
+        let hasUsedModifierInCombo = false;
+
+
+        const recordMacroStep = (comboStr: string) => {
+            if (!recordingTargetId) return;
+            const input = document.getElementById(recordingTargetId) as HTMLInputElement;
+            if (!input) return;
+
+            const now = Date.now();
+            if (input.value.length === 0) {
+                input.value = comboStr;
+            } else {
+                const delta = now - lastRecordTime;
+                input.value += `,w${Math.min(delta, 99999)},${comboStr}`;
+            }
+            lastRecordTime = now;
+
+            const corner = recordingTargetId.split('-')[1];
+            const statusEl = document.getElementById(`status-record-${corner}`);
+            if (statusEl) statusEl.textContent = `🔴 錄製中 (${comboStr})...`;
+
+            input.dispatchEvent(new Event('input'));
+            updatePreview();
+        };
+
+        /** 混和錄製模式：結合 DOM 事件與系統 Hook 確保錄製成功率 */
+
+        
+        let activeVkModifiers = new Set<number>();
+        let lastProcessedKey = "";
+        let lastProcessedTime = 0;
+
+        const processKeyRecord = (comboStr: string) => {
+            const now = Date.now();
+            // 防止同一個按鍵在極短時間內被 DOM 與 Rust 同時觸發導致重複錄製
+            if (comboStr === lastProcessedKey && now - lastProcessedTime < 50) {
+                return;
+            }
+            lastProcessedKey = comboStr;
+            lastProcessedTime = now;
+            recordMacroStep(comboStr);
+        };
+
+        listen('physical_key', (event: any) => {
+            if (!recordingTargetId) return;
+            const { code, is_down } = event.payload;
+            
+
+            
+            const isMod = (c: number) => [0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5].includes(c);
+            
+            if (is_down) {
+                if (isMod(code)) {
+                    activeVkModifiers.add(code);
+                    hasUsedModifierInCombo = false;
+                    return;
+                }
+                
+                hasUsedModifierInCombo = true;
+                const hex = '0x' + code.toString(16).toLowerCase();
+                let combination: string[] = [];
+                
+                if (activeVkModifiers.has(0x11) || activeVkModifiers.has(0xA2) || activeVkModifiers.has(0xA3)) combination.push('0xa2');
+                if (activeVkModifiers.has(0x10) || activeVkModifiers.has(0xA0) || activeVkModifiers.has(0xA1)) combination.push('0xa0');
+                if (activeVkModifiers.has(0x12) || activeVkModifiers.has(0xA4) || activeVkModifiers.has(0xA5)) combination.push('0xa4');
+                if (activeVkModifiers.has(0x5B) || activeVkModifiers.has(0x5C)) combination.push('0x5b');
+                
+                if (!combination.includes(hex)) combination.push(hex);
+                processKeyRecord(combination.join('+'));
+            } else {
+                if (isMod(code)) {
+                    if (!hasUsedModifierInCombo) {
+                        let hex = '0x' + code.toString(16).toLowerCase();
+                        if ([0x10, 0xA0, 0xA1].includes(code)) hex = '0xa0';
+                        if ([0x11, 0xA2, 0xA3].includes(code)) hex = '0xa2';
+                        if ([0x12, 0xA4, 0xA5].includes(code)) hex = '0xa4';
+                        if ([0x5B, 0x5C].includes(code)) hex = '0x5b';
+                        processKeyRecord(hex);
+                    }
+                    activeVkModifiers.delete(code);
+                }
+            }
+        });
+    // 恢復雙引擎錄製 (Hybrid Mode 3.0)
+    // 由於 WebView2 焦點中會導致底層 Hook 失效，我們在焦點中改由 DOM 錄製，防護則交給 RegisterHotKey
+        window.addEventListener('keydown', (e) => {
+            if (!recordingTargetId) return;
+            
+            // 徹底封鎖瀏覽器行為 (F5, Ctrl+R 等)
+            e.preventDefault();
+            e.stopPropagation();
+            
+            if (e.repeat) return;
+
+            const code = e.keyCode;
+            const isMod = (c: number) => [16, 17, 18, 91, 92].includes(c);
+            
+            if (isMod(code)) {
+                hasUsedModifierInCombo = false;
+                return;
+            }
+
+            hasUsedModifierInCombo = true;
+            const hex = '0x' + code.toString(16).toLowerCase();
+            let combination: string[] = [];
+            if (e.ctrlKey) combination.push('0xa2');
+            if (e.shiftKey) combination.push('0xa0');
+            if (e.altKey) combination.push('0xa4');
+            if (e.metaKey) combination.push('0x5b');
+            if (!combination.includes(hex)) combination.push(hex);
+            
+            processKeyRecord(combination.join('+'));
+        }, true);
+
+        window.addEventListener('keyup', (e) => {
+            if (!recordingTargetId) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            const code = e.keyCode;
+            const isMod = (c: number) => [16, 17, 18, 91, 92].includes(c);
+            if (isMod(code) && !hasUsedModifierInCombo) {
+                let hex = '0x' + code.toString(16).toLowerCase();
+                if (code === 17) hex = '0xa2';
+                if (code === 16) hex = '0xa0';
+                if (code === 18) hex = '0xa4';
+                if (code === 91 || code === 92) hex = '0x5b';
+                processKeyRecord(hex);
+            }
+        }, true);
+        
+        // 防止錄製期間意外重新載入
+        window.addEventListener('beforeunload', (e) => {
+            if (recordingTargetId) {
+                invoke('set_recording_mode', { enabled: false }); // 安全復原
+                e.preventDefault();
+                // @ts-ignore
+                e.returnValue = ''; 
+                return '';
+            }
+        });
+
+        // 綁定各角落按鈕
+        ['tl', 'tr', 'bl', 'br'].forEach(corner => {
+            const btnBrowse = document.getElementById(`btn-browse-${corner}`);
+            const btnRecord = document.getElementById(`btn-record-${corner}`);
+            const inputVal = document.getElementById(`edit-${corner}-value`) as HTMLInputElement;
+            const statusEl = document.getElementById(`status-record-${corner}`);
+
+            if (btnBrowse && inputVal) {
+                btnBrowse.addEventListener('click', async () => {
+                    const selected = await open({
+                        multiple: false,
+                        filters: [{ name: 'Executable', extensions: ['exe', 'bat', 'cmd', 'lnk'] }]
+                    });
+                    if (selected && typeof selected === 'string') {
+                        inputVal.value = selected;
+                        inputVal.dispatchEvent(new Event('input'));
+                        updatePreview();
+                    }
+                });
+            }
+
+            if (btnRecord && inputVal) {
+                btnRecord.addEventListener('click', async () => {
+                    if (recordingTargetId === inputVal.id) {
+                        recordingTargetId = null;
+                        await invoke('set_recording_mode', { enabled: false });
+                        inputVal.readOnly = false;
+                        btnRecord.classList.remove('active-tool');
+                        btnRecord.textContent = '⏺️';
+                        if (statusEl) {
+                            statusEl.style.display = 'none';
+                            statusEl.textContent = '🔴 錄製中...';
+                        }
+                    } else {
+                        if (recordingTargetId) {
+                            const prevCorner = recordingTargetId.split('-')[1];
+                            const prevBtn = document.getElementById(`btn-record-${prevCorner}`);
+                            const prevInput = document.getElementById(`edit-${prevCorner}-value`) as HTMLInputElement;
+                            const prevStatus = document.getElementById(`status-record-${prevCorner}`);
+                            if (prevBtn) {
+                                prevBtn.classList.remove('active-tool');
+                                prevBtn.textContent = '⏺️';
+                            }
+                            if (prevInput) prevInput.readOnly = false;
+                            if (prevStatus) prevStatus.style.display = 'none';
+                        }
+                        
+                        // 強制視窗獲取焦點，確保 Rust Hook 能正確判定前景並攔截按鍵
+                        await getCurrentWindow().setFocus();
+                        
+                        activeVkModifiers.clear();
+                        recordingTargetId = inputVal.id;
+                        await invoke('set_recording_mode', { enabled: true });
+                        
+                        inputVal.readOnly = true;
+                        inputVal.value = '';
+                        lastRecordTime = Date.now();
+                        btnRecord.classList.add('active-tool');
+                        btnRecord.textContent = '⏹️';
+                        if (statusEl) statusEl.style.display = 'flex';
+                        
+                        btnRecord.blur();
+                        inputVal.focus();
+                    }
+                });
+            }
+        });
     }
 
     let editorModifiers = { isShift: false, isFn: false, isCaps: false, isNum: false };
@@ -1791,21 +2109,96 @@ async function initEditorWindowMode() {
     };
 
     await listen('load-key', (e: any) => {
-        const { key, isDark, isDynamic: dynamicMode, modifiers } = e.payload;
+        const { key, isDark, isDynamic: dynamicMode, isFull: editorIsFull, modifiers } = e.payload;
         if (modifiers) editorModifiers = modifiers;
         if (dynamicMode !== undefined) isDynamic = dynamicMode;
         applyTheme(isDark);
         
-        const setVal = (id: string, val: string) => { (document.getElementById(id) as HTMLInputElement).value = val; };
+        const setVal = (id: string, val: string) => { (document.getElementById(id) as any).value = val; };
+        const setLock = (id: string, isLocked: boolean) => {
+            const el = document.getElementById(id) as any;
+            if (el) {
+                el.readOnly = isLocked;
+                if (isLocked) {
+                    el.style.backgroundColor = isDark ? '#334155' : '#f1f5f9';
+                    el.style.color = isDark ? '#94a3b8' : '#94a3b8';
+                } else {
+                    el.style.backgroundColor = '';
+                    el.style.color = '';
+                }
+            }
+            // 鎖定時同步禁用對應的瀏覽與錄製按鈕
+            if (id.includes('-value')) {
+                const corner = id.split('-')[1]; // tl, tr, bl, br
+                const btnBrowse = document.getElementById(`btn-browse-${corner}`) as HTMLButtonElement;
+                const btnRecord = document.getElementById(`btn-record-${corner}`) as HTMLButtonElement;
+                if (btnBrowse) {
+                    btnBrowse.disabled = isLocked;
+                    btnBrowse.style.opacity = isLocked ? '0.3' : '1';
+                    btnBrowse.style.pointerEvents = isLocked ? 'none' : 'auto';
+                }
+                if (btnRecord) {
+                    btnRecord.disabled = isLocked;
+                    btnRecord.style.opacity = isLocked ? '0.3' : '1';
+                    btnRecord.style.pointerEvents = isLocked ? 'none' : 'auto';
+                }
+            }
+        };
+        
+        const defaultValTl = getDefaultKeyValue(key, 'tl');
+        const defaultValTr = getDefaultKeyValue(key, 'tr');
+        const defaultValBl = getDefaultKeyValue(key, 'bl');
         
         setVal('edit-tl-display', key.tl_ov?.display || key.label || "");
-        setVal('edit-tl-value', key.tl_ov?.value || getDefaultKeyValue(key, 'tl'));
+        setVal('edit-tl-value', key.tl_ov?.value || defaultValTl);
+        const isTlLocked = defaultValTl !== "" && defaultValTl !== "0x0";
+        setLock('edit-tl-value', isTlLocked);
+        setLock('edit-tl-display', isTlLocked);
+        
         setVal('edit-tr-display', key.tr_ov?.display || key.sub || "");
-        setVal('edit-tr-value', key.tr_ov?.value || getDefaultKeyValue(key, 'tr'));
+        setVal('edit-tr-value', key.tr_ov?.value || defaultValTr);
+        const isTrLocked = defaultValTr !== "";
+        setLock('edit-tr-value', isTrLocked);
+        setLock('edit-tr-display', isTrLocked);
+        
         setVal('edit-bl-display', key.bl_ov?.display || key.fn || "");
-        setVal('edit-bl-value', key.bl_ov?.value || getDefaultKeyValue(key, 'bl'));
+        setVal('edit-bl-value', key.bl_ov?.value || defaultValBl);
+        
+        if (editorIsFull) {
+            setLock('edit-bl-display', true);
+            setLock('edit-bl-value', true);
+            setVal('edit-bl-display', "");
+            setVal('edit-bl-value', "");
+        } else {
+            const isBlLocked = defaultValBl !== "";
+            setLock('edit-bl-display', isBlLocked);
+            setLock('edit-bl-value', isBlLocked);
+        }
+        
         setVal('edit-br-display', key.br_ov?.display || key.zhPinyin || "");
         setVal('edit-br-value', key.br_ov?.value || "");
+        setLock('edit-br-display', false);
+        setLock('edit-br-value', false);
+
+        // 初始化所有 textarea 高度
+        ['tl', 'tr', 'bl', 'br'].forEach(corner => {
+            const ta = document.getElementById(`edit-${corner}-value`) as HTMLTextAreaElement;
+            if (ta) syncTextareaHeight(ta);
+        });
+
+        // 切換鍵防呆：鎖定其對應的角落，防止使用者覆蓋設定導致切換後無法切回
+        if (key.code === 0xA0 || key.code === 0xA1 || key.code === 0x14) { // Shift, Caps Lock -> TR
+            setLock('edit-tr-display', true);
+            setLock('edit-tr-value', true);
+        }
+        if (key.code === 0xFE) { // Fn -> BL
+            setLock('edit-bl-display', true);
+            setLock('edit-bl-value', true);
+        }
+        if (key.code === 0x5D) { // 中英切換 (En/ㄅ) -> BR
+            setLock('edit-br-display', true);
+            setLock('edit-br-value', true);
+        }
 
         const defaultBg = isDark ? '#1e293b' : '#ffffff';
         const defaultTl = isDark ? '#f8fafc' : '#0f172a';
@@ -1836,6 +2229,16 @@ async function initEditorWindowMode() {
         if (!el) return;
         el.addEventListener('input', () => {
             const getVal = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
+            
+            const defaultBg = isDark ? '#1e293b' : '#ffffff';
+            const defaultBorder = isDark ? '#475569' : '#e2e8f0';
+            
+            let newBg: string | null = getVal('edit-bg-color');
+            if (newBg === defaultBg) newBg = null;
+            
+            let newBorder: string | null = getVal('edit-border-color');
+            if (newBorder === defaultBorder) newBorder = null;
+
             const data = {
                 tl_ov: { display: getVal('edit-tl-display'), value: getVal('edit-tl-value') },
                 tr_ov: { display: getVal('edit-tr-display'), value: getVal('edit-tr-value') },
@@ -1845,11 +2248,15 @@ async function initEditorWindowMode() {
                 trColor: getVal('edit-tr-color'),
                 blColor: getVal('edit-bl-color'),
                 brColor: getVal('edit-br-color'),
-                bgColor: getVal('edit-bg-color'),
-                borderColor: getVal('edit-border-color')
+                bgColor: newBg,
+                borderColor: newBorder
             };
             emit('editor-update', data);
 
+
+            if (id.endsWith('-value') && el instanceof HTMLTextAreaElement) {
+                syncTextareaHeight(el);
+            }
 
             updatePreview();
         });
@@ -1867,8 +2274,15 @@ async function initEditorWindowMode() {
     setupApplyCorner('btn-apply-br-all', 'edit-br-color', 'brColor', '注音 (BR)');
 
     document.getElementById('btn-apply-bg-border-all')?.addEventListener('click', () => {
-        const bgColor = (document.getElementById('edit-bg-color') as HTMLInputElement).value;
-        const borderColor = (document.getElementById('edit-border-color') as HTMLInputElement).value;
+        const defaultBg = isDark ? '#1e293b' : '#ffffff';
+        const defaultBorder = isDark ? '#475569' : '#e2e8f0';
+
+        let bgColor: string | null = (document.getElementById('edit-bg-color') as HTMLInputElement).value;
+        if (bgColor === defaultBg) bgColor = null;
+
+        let borderColor: string | null = (document.getElementById('edit-border-color') as HTMLInputElement).value;
+        if (borderColor === defaultBorder) borderColor = null;
+
         emit('editor-apply-all', { 
             updates: [
                 { prop: 'bgColor', color: bgColor },

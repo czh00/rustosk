@@ -120,7 +120,7 @@ export const fullLayout: KeyDefinition[][] = [
     { code: 0x2C, label: 'PrtSc', special: true }, { code: 0x91, label: 'ScrLk', special: true }, { code: 0x13, label: 'Pause', special: true },
     { code: 0, label: '', special: true, class: 'invisible', width: 0.25 },
     { code: 0xAD, label: '🔇', special: true }, { code: 0xAE, label: '🔉', special: true }, { code: 0xAF, label: '🔊', special: true },
-    { code: 0, label: '', special: true, class: 'invisible', width: 1.0 }
+    { code: 0, label: 'cal', special: true, tl_ov: { display: 'cal', value: 'calc.exe' }, width: 1.0 }
   ],
   // Row 1: Number row + Nav keys + Numpad row 0
   [
