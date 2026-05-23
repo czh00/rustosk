@@ -1,0 +1,1137 @@
+:root {
+  --bg-color: rgba(15, 23, 42, 0.75); /* 半透明以支援玻璃擬態 */
+  --key-bg: rgba(255, 255, 255, 0.06);
+  --key-special-bg: rgba(255, 255, 255, 0.03);
+  --key-active: rgba(56, 189, 248, 0.5);
+  --key-toggle: rgba(56, 189, 248, 0.25);
+  --text-main: #f8fafc;
+  --text-sub: #94a3b8;
+  --border-color: rgba(255, 255, 255, 0.12);
+  --accent: #38bdf8;
+  --accent-glow: rgba(56, 189, 248, 0.6);
+  --accent-pinned: #22d3ee;
+
+  /* Corner Colors (Default: Dark Mode) */
+  --color-tl: #f8fafc;
+  --color-tr: #38bdf8;
+  --color-bl: #4ade80;
+  --color-br: #fbbf24;
+
+  --color-fn: #4ade80;
+  --color-zh: #fbbf24;
+  --color-shift: #38bdf8;
+  --color-num: #bae6fd;
+
+  --corner-opacity: 0.8;
+  --corner-weight: 600;
+  --color-dim: rgba(255, 255, 255, 0.2);
+
+  /* Grid System */
+  --grid-unit: 4;
+  /* 0.25u = 1 grid column */
+}
+
+.hidden { display: none !important; }
+
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden !important;
+  /* 禁用預設捲動行為，由特定模式下的樣式自行決定 */
+  background: transparent;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  display: flex;
+  justify-content: flex-start;
+  align-items: flex-start;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html.editor-window,
+body.editor-window {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  height: auto !important;
+  min-height: 100%;
+}
+
+.keyboard {
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  background: var(--kb-bg-gradient, linear-gradient(
+    135deg,
+    rgba(15, 23, 42, 0.8),
+    rgba(30, 41, 59, 0.7)
+  ));
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: none !important;
+  width: 100% !important;
+  height: 100% !important;
+  box-sizing: border-box;
+  overflow: hidden !important;
+  outline: none !important;
+  touch-action: none;
+}
+
+#inner-root {
+  width: var(--base-width, 723px);
+  height: var(--base-height, auto);
+  transform: scale(var(--app-scale, 1));
+  transform-origin: top left;
+  overflow: visible !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.keyboard.full-keyboard #keys-container {
+  display: grid !important;
+  grid-template-columns: repeat(270, 1fr) !important;
+  column-gap: 0px !important;
+  row-gap: 5px !important;
+}
+
+.keyboard.full-keyboard .row {
+  display: contents !important;
+}
+
+.center-label {
+  display: none;
+  font-weight: 700;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  position: absolute;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  max-width: calc(100% - 8px);
+  width: auto;
+  text-align: center;
+  line-height: 1;
+  transition: none !important;
+}
+
+/* Ensure no gaps at the edge */
+.keyboard:active {
+  cursor: move;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0px 8px;
+  height: 36px; /* 稍微增加高度以容納進度條 */
+  background: var(--toolbar-bg, rgba(0, 0, 0, 0.2));
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 2px;
+  position: relative;
+}
+
+#macro-progress-container {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: rgba(56, 189, 248, 0.1);
+  display: none;
+}
+
+#macro-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  transition: width 0.1s linear;
+}
+
+.toolbar-left {
+  -webkit-app-region: drag;
+  cursor: move;
+}
+
+.toolbar-spacer {
+  flex-grow: 1;
+  height: 22px;
+  -webkit-app-region: drag;
+  cursor: move;
+}
+
+.toolbar-right {
+  -webkit-app-region: no-drag;
+}
+
+.toolbar-left {
+  -webkit-app-region: drag;
+  font-size: 10px;
+  color: var(--text-sub);
+  letter-spacing: 0.05em;
+  cursor: move;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 0;
+  width: 350px;
+  overflow: visible;
+  line-height: 1.2;
+  height: 30px;
+}
+
+.toolbar-right {
+  -webkit-app-region: no-drag;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.toolbar.editing-mode .toolbar-right,
+.toolbar.editing-mode .toolbar-spacer {
+  display: none !important;
+}
+
+.info-line {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#opacity-slider {
+  -webkit-appearance: none;
+  width: 120px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  margin-right: 10px;
+}
+
+#opacity-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+  border: 2px solid white;
+}
+
+#opacity-slider::-webkit-slider-thumb:active {
+  transform: scale(1.2);
+}
+
+.tool-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-sub);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  -webkit-app-region: no-drag;
+  touch-action: none;
+}
+
+.tool-btn * {
+  pointer-events: none;
+}
+
+.tool-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tool-btn.active-tool {
+  color: var(--accent);
+  background: transparent;
+  box-shadow: none;
+}
+
+.tool-btn#btn-pin.active-tool {
+  color: var(--accent-pinned);
+  background: transparent;
+  box-shadow: none;
+}
+
+.full-width {
+  grid-column: span 2;
+}
+
+.color-settings {
+  margin-top: 10px;
+  padding-top: 15px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.color-picker-group {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-top: 10px;
+}
+
+.preview-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.tiny-label {
+  font-size: 10px;
+  color: var(--text-sub);
+  text-transform: uppercase;
+}
+
+.key-preview-box {
+  width: 60px;
+  height: 60px;
+  background: var(--key-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  font-weight: bold;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.key-preview-box span {
+  position: absolute;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px; /* 每格 1/2 寬 */
+  height: 30px; /* 每格 1/2 高 */
+}
+
+.preview-tl { top: 0; left: 0; font-size: 25px; }
+.preview-tr { top: 0; right: 0; font-size: 25px; }
+.preview-bl { bottom: 0; left: 0; font-size: 25px; }
+.preview-br { bottom: 0; right: 0; font-size: 25px; }
+.preview-center { top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 30px; width: 100% !important; height: 100% !important; }
+
+.input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.input-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.color-picker-mini {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.color-picker-mini input[type="color"] {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.tiny-apply {
+  background: var(--key-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.tiny-apply:hover {
+  background: var(--key-active);
+  border-color: var(--accent);
+}
+
+.background-settings {
+  border-top: 1px solid var(--border-color);
+  padding-top: 15px;
+  margin-top: 5px;
+}
+
+.bg-picker-controls {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bg-picker-row {
+  display: flex;
+  gap: 15px;
+  align-items: center;
+}
+
+.bg-picker-row input[type="color"] {
+  width: 44px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.apply-all-btn {
+  margin-left: auto;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-main);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.apply-all-btn:hover {
+  background: var(--accent);
+  color: #0f172a;
+  border-color: var(--accent);
+}
+
+#keys-container {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  height: auto !important;
+  overflow: visible !important;
+  flex-shrink: 0 !important;
+  width: fit-content;
+}
+
+#keyboard-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.keyboard.full-keyboard #keys-container {
+  display: grid !important;
+  grid-template-columns: repeat(270, 1fr) !important;
+  column-gap: 0px !important;
+  row-gap: 5px !important;
+  margin: 0 !important;
+}
+
+.keyboard.full-keyboard .key {
+  width: calc(100% - 5px) !important;
+  /* 🔥 手動扣除 5px 模擬間隙，繞開 grid column-gap 導致的總寬度撐爆問題 */
+  margin-right: 0 !important;
+  /* 🔥 停用 Margin 以免干擾 Grid 計算 */
+}
+
+.row {
+  display: flex;
+  justify-content: flex-start !important;
+  align-items: flex-start;
+  height: 48px !important;
+  box-sizing: border-box;
+  flex-shrink: 0 !important;
+  overflow: visible !important;
+  gap: 0 !important;
+}
+
+.key {
+  height: 48px !important;
+  background: var(--key-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  display: inline-flex;
+  position: relative;
+  transition: background 0.1s ease, border-color 0.1s ease, box-shadow 0.1s ease;
+  color: var(--text-main);
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  box-sizing: border-box;
+  flex-shrink: 0;
+  margin-right: 5px;
+}
+
+.key:last-child {
+  margin-right: 0;
+}
+
+/* Ensure Drag & Drop targets work without label interference */
+.key * {
+  pointer-events: none;
+}
+
+.key.active-toggle {
+  background: var(--key-toggle);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
+}
+
+.key.special {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-sub);
+}
+
+.key.invisible {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.key.num {
+  color: var(--accent);
+}
+
+.key:hover {
+  background: rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.key.active {
+  background: var(--key-active) !important;
+  transform: scale(0.95);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.key.physical-active {
+  background: rgba(255, 255, 255, 0.4) !important;
+  transform: scale(0.97);
+  box-shadow: inset 0 0 15px rgba(255, 255, 255, 0.8), 0 0 10px rgba(255, 255, 255, 0.5);
+  border-color: rgba(255, 255, 255, 0.8);
+  color: white !important;
+}
+
+.key.span-2-rows {
+  height: 101px !important;
+  min-height: 101px !important;
+  max-height: 101px !important;
+  z-index: 10;
+  grid-row: span 2;
+}
+
+.key span {
+  position: absolute;
+  pointer-events: none;
+  transition: all 0.15s ease;
+  color: var(--text-main);
+  /* Default to white */
+}
+
+/* Base Corners Positioning - LOCKED to corners, never center in static */
+.tl {
+  top: 4px;
+  left: 6px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.tr {
+  top: 4px;
+  right: 6px;
+  font-size: 10px;
+  opacity: 1;
+}
+
+.bl {
+  bottom: 4px;
+  left: 6px;
+  font-size: 10px;
+  opacity: 1;
+}
+
+.br {
+  bottom: 4px;
+  right: 6px;
+  font-size: 10px;
+  opacity: 1;
+}
+
+/* Permanent Corner Colors and Base Opacity */
+.tl {
+  color: var(--color-tl) !important;
+  opacity: var(--corner-opacity);
+  font-weight: var(--corner-weight);
+}
+
+.tr {
+  color: var(--color-tr) !important;
+  opacity: var(--corner-opacity);
+  font-weight: var(--corner-weight);
+}
+
+.bl {
+  color: var(--color-bl) !important;
+  opacity: var(--corner-opacity);
+  font-weight: var(--corner-weight);
+}
+
+.br {
+  color: var(--color-br) !important;
+  opacity: var(--corner-opacity);
+  font-weight: var(--corner-weight);
+}
+
+/* Numpad Corner Colors Override */
+.key.num-key .br {
+  color: var(--color-num) !important;
+}
+
+.key.num-key .tl {
+  color: var(--text-main) !important;
+}
+
+/* Special Keys Centering Logic (Always centered regardless of dynamic mode) */
+.key.special .center-label {
+  display: block !important;
+}
+
+.key.special .tl {
+  display: none !important;
+  /* Hide TL to avoid overlapping with center label */
+}
+
+/* Special Keys Dimming: Match other keys' dimming behavior for corner labels */
+.keyboard:not(.mod-shift):not(.mod-fn):not(.mod-zh):not(.dynamic-labels) .key.special.has-corners span:not(.center-label):not(.tl) {
+  opacity: 0.25;
+}
+
+.keyboard.mod-shift:not(.dynamic-labels):not(.mod-fn) .key.special.has-corners span:not(.center-label):not(.tl):not(.tr) {
+  opacity: 0.25;
+}
+
+/* Ensure dynamic labels are NEVER dimmed and always bright */
+.dynamic-labels .center-label {
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.2));
+}
+
+/* Focus Dimming Logic for Static Mode (Fixed positions) */
+/* Focus Dimming Logic for Static Mode (Fixed positions) */
+/* (v1.0.6: Removed global Shift TL highlighters as they interfered with non-symbol keys) */
+
+/* Fn focuses on BL - Only affects keys with corners (v1.0.2) */
+.keyboard.mod-fn:not(.dynamic-labels) .key.has-corners span:not(.bl) {
+  opacity: 0.25;
+}
+
+.keyboard.mod-fn:not(.dynamic-labels) .key.has-corners .bl {
+  opacity: 1;
+  text-shadow: 0 0 12px #4ade80;
+}
+
+/* Zhuyin Mode Dimming focuses on BR - Only fails on keys with corners (v1.0.2) */
+.keyboard.mod-zh:not(.dynamic-labels):not(.mod-fn) .key.has-corners span:not(.br) {
+  opacity: 0.25;
+}
+
+.keyboard.mod-zh:not(.dynamic-labels):not(.mod-fn) .key.has-corners .br {
+  opacity: 1;
+  text-shadow: 0 0 12px #fbbf24;
+}
+
+/* NumLock Dimming focuses on BR (Number) ONLY for numeric digits */
+.keyboard.mod-num:not(.dynamic-labels):not(.mod-fn) .key.num-key.has-corners span:not(.br) {
+  opacity: 0.25;
+}
+
+.keyboard.mod-num:not(.dynamic-labels):not(.mod-fn) .key.num-key.has-corners .br {
+  opacity: 1;
+  text-shadow: 0 0 12px var(--color-num);
+}
+
+/* NumLock OFF (Default) focuses on TL (Nav) ONLY for numeric digits */
+.keyboard:not(.mod-num):not(.dynamic-labels):not(.mod-fn) .key.num-key.has-corners span:not(.tl) {
+  opacity: 0.25;
+}
+
+.keyboard:not(.mod-num):not(.dynamic-labels):not(.mod-fn) .key.num-key.has-corners .tl {
+  opacity: 1;
+  text-shadow: 0 0 12px var(--text-main);
+}
+
+/* Alphabet Highlighting (v0.9.9+) */
+/* Normal state: highlight tl (lowercase) - Exclude Modifiers (v1.0.6) */
+.keyboard:not(.mod-shift):not(.mod-caps):not(.mod-fn):not(.mod-zh):not(.dynamic-labels) .key.alpha-key.has-corners span:not(.tl) {
+  opacity: 0.25;
+}
+
+.keyboard:not(.mod-shift):not(.mod-caps):not(.mod-fn):not(.mod-zh):not(.dynamic-labels) .key.alpha-key.has-corners .tl {
+  opacity: 1;
+  text-shadow: 0 0 12px var(--color-tl);
+}
+
+/* Shift or CapsLock state: highlight tr (uppercase) for Alphabet */
+.keyboard.mod-shift:not(.dynamic-labels):not(.mod-fn) .key.alpha-key.has-corners span:not(.tr),
+.keyboard.mod-caps:not(.dynamic-labels):not(.mod-fn) .key.alpha-key.has-corners span:not(.tr) {
+  opacity: 0.25;
+}
+
+.keyboard.mod-shift:not(.dynamic-labels):not(.mod-fn) .key.alpha-key.has-corners .tr,
+.keyboard.mod-caps:not(.dynamic-labels):not(.mod-fn) .key.alpha-key.has-corners .tr {
+  opacity: 1;
+  text-shadow: 0 0 12px var(--color-tr);
+}
+
+/* Symbol/Number Highlighting (v1.0.0) */
+/* Normal state: highlight tl (number) - Exclude Modifiers & Numpad (v1.0.6) */
+.keyboard:not(.mod-shift):not(.mod-fn):not(.mod-zh):not(.dynamic-labels) .key.symbol-key.has-corners:not(.num-key) span:not(.tl) {
+  opacity: 0.25;
+}
+
+.keyboard:not(.mod-shift):not(.mod-fn):not(.mod-zh):not(.dynamic-labels) .key.symbol-key.has-corners:not(.num-key) .tl {
+  opacity: 1;
+  text-shadow: 0 0 12px var(--color-tl);
+}
+
+/* Only Shift triggers tr (symbol) for non-alpha keys - Exclude Numpad */
+.keyboard.mod-shift:not(.dynamic-labels):not(.mod-fn) .key.symbol-key.has-corners:not(.num-key) span:not(.tr) {
+  opacity: 0.25;
+}
+
+.keyboard.mod-shift:not(.dynamic-labels):not(.mod-fn) .key.symbol-key.has-corners:not(.num-key) .tr {
+  opacity: 1;
+  text-shadow: 0 0 12px var(--color-tr);
+}
+
+/* Numpad specific override to ensure it NEVER responds to mod-shift */
+.keyboard.mod-shift:not(.dynamic-labels) .key.num-key {
+  /* Rules for num-key already exist above and don't check for mod-shift, 
+       so they will maintain their NumLock-based state. */
+}
+
+/* Active State Colors (Legacy fallback) */
+.key.active-toggle .tr {
+  color: var(--color-shift);
+}
+
+.key.active-toggle .bl {
+  color: var(--color-fn);
+}
+
+.key.active-toggle .br {
+  color: var(--color-num);
+}
+
+.key.num .br {
+  color: var(--color-num);
+}
+
+/* num class specific */
+
+/* Dynamic Labels logic handled via classes */
+.dynamic-labels .center-label {
+  display: block !important;
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.2));
+}
+
+.dynamic-labels .tl,
+.dynamic-labels .tr,
+.dynamic-labels .bl,
+.dynamic-labels .br {
+  display: none !important;
+}
+
+/* Global Color Utility Classes for Mode-Switching Keys (v1.0.8) */
+.color-zh {
+  color: var(--color-zh) !important;
+  font-size: 20px;
+}
+
+.color-fn {
+  color: var(--color-fn) !important;
+}
+
+.color-shift {
+  color: var(--color-shift) !important;
+}
+
+.color-num {
+  color: var(--color-num) !important;
+}
+
+/* Dynamic Label Mode Toggle */
+.dynamic-labels .tl,
+.dynamic-labels .tr,
+.dynamic-labels .bl,
+.dynamic-labels .br {
+  display: none;
+}
+
+.dynamic-labels .center-label {
+  display: block;
+}
+
+/* Special key center text should keep JS calculated size unless manually overridden */
+.key.special .center-label {
+  /* No font-size override here to allow JS 24px/20px to work */
+}
+
+.cyan-text {
+  color: var(--accent) !important;
+}
+
+/* Dynamic Modifiers - ONLY apply in dynamic-labels mode */
+.dynamic-labels.mod-shift .key .tl {
+  opacity: 0.3;
+}
+
+.dynamic-labels.mod-shift .key .tr {
+  font-size: 14px;
+  color: var(--text-main);
+  opacity: 1;
+  top: 12px;
+  right: 50%;
+  transform: translateX(50%);
+}
+
+.dynamic-labels.mod-fn .key .tl {
+  opacity: 0.3;
+}
+
+.dynamic-labels.mod-fn .key .bl {
+  font-size: 14px;
+  opacity: 1;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Edit Mode */
+.edit-mode .key.edit-target {
+  border: 1px dashed var(--accent);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    border-color: rgba(56, 189, 248, 0.3);
+  }
+
+  50% {
+    border-color: rgba(56, 189, 248, 1);
+  }
+
+  100% {
+    border-color: rgba(56, 189, 248, 0.3);
+  }
+}
+
+.key.dragging {
+  opacity: 0.2;
+  transform: scale(0.9);
+}
+
+.key-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.7;
+  background: var(--accent) !important;
+  transform: translate(-50%, -50%) scale(1.1);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5);
+  border: 2px solid white;
+  color: white !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.key.drag-over {
+  background: rgba(56, 189, 248, 0.3) !important;
+  border: 2px solid var(--accent) !important;
+}
+
+#opacity-slider {
+  width: 60px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* Custom Tooltip Logic */
+.custom-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  background: var(--tooltip-bg, rgba(15, 23, 42, 0.6));
+  backdrop-filter: blur(10px);
+  color: var(--tooltip-color, #f8fafc);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  /* 移除 transition 以免造成視覺殘留或遲滯感 */
+  z-index: 2147483647;
+  border: 1px solid var(--tooltip-border, rgba(255, 255, 255, 0.15));
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+  white-space: pre-wrap;
+  transform: translateY(-5px);
+}
+
+.custom-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+/* 按鍵編輯彈窗 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  z-index: 100000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: none;
+}
+
+.modal-overlay.active {
+  display: flex;
+  opacity: 1;
+}
+
+.modal-content {
+  margin: auto;
+  background: var(--modal-bg, rgba(15, 23, 42, 0.95));
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 16px 20px;
+  width: 90%;
+  max-width: 440px;
+  box-shadow: 0 30px 60px -12px rgba(0, 0, 0, 0.6);
+  transform: scale(0.9);
+  transition: none;
+  backdrop-filter: blur(20px);
+}
+
+.modal-overlay.active .modal-content {
+  transform: scale(1);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-sub);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  transition: all 0.2s ease;
+}
+
+.modal-close-btn:hover {
+  color: var(--text-main);
+  transform: scale(1.1);
+}
+
+.editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--section-bg, rgba(255, 255, 255, 0.04));
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.editor-section label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+
+.editor-section input,
+.editor-section textarea {
+  background: var(--input-bg, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text-main);
+  font-size: 13px;
+  outline: none;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.editor-section textarea {
+  resize: none;
+  min-height: 34px;
+  overflow-y: hidden;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.editor-section input:focus,
+.editor-section textarea:focus {
+  border-color: var(--accent);
+  background: rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.modal-actions button {
+  padding: 10px 24px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+}
+
+.save-btn {
+  background: var(--accent);
+  color: #0f172a;
+  box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3);
+}
+
+.save-btn:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+  box-shadow: 0 6px 16px rgba(56, 189, 248, 0.4);
+}
+
+.cancel-btn {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-sub);
+}
+
+.cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+}
+
+.focus-pulse {
+  animation: save-pulse 2s infinite;
+}
+
+@keyframes save-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.4);
+  }
+
+  70% {
+    box-shadow: 0 0 0 10px rgba(56, 189, 248, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0);
+  }
+}
+
+.key.space .center-label {
+  display: block !important;
+}
+
+.key.space .tl {
+  display: none !important;
+}
+
+.help-info-box {
+  padding: 12px;
+  margin: 0 16px 16px 16px;
+  background: var(--help-bg, rgba(0, 0, 0, 0.3));
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-main);
+  border: 1px solid var(--help-border, rgba(255, 255, 255, 0.1));
+}
+
+.help-title {
+  font-weight: bold;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--help-border, rgba(255, 255, 255, 0.1));
+  padding-bottom: 4px;
+}
+
+.help-info-box code {
+  background: var(--code-bg, rgba(0, 0, 0, 0.3));
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: var(--accent);
+  font-family: monospace;
+  font-weight: 600;
+}

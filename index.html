@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RustOSK</title>
+    <link rel="stylesheet" href="/src/style.css" />
+</head>
+
+<body oncontextmenu="return false;">
+    <div id="keyboard" class="keyboard">
+        <div id="inner-root">
+            <div id="toolbar" class="toolbar">
+                <div class="toolbar-left">
+                    <div id="info-focus" class="info-line">rustosk v1.9.2</div>
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: center; width: 100%; white-space: nowrap;">
+                        <div id="info-clipboard" class="info-line" style="width: auto;">📋</div>
+                        <div id="info-macro"
+                            style="color: var(--accent); font-weight: bold; font-size: 9px; padding-left: 10px;"></div>
+                    </div>
+                </div>
+                <div class="toolbar-spacer"></div>
+                <div class="toolbar-right">
+                    <input type="range" id="opacity-slider" min="0.1" max="1" step="0.05" value="1" data-tip="透明度" />
+                    <button id="btn-layout" class="tool-btn" data-tip="切換版面 (Full/Compact)">💻</button>
+                    <button id="btn-dynamic" class="tool-btn" data-tip="動態字元顯示 (Dynamic/Static)">🗔</button>
+                    <button id="btn-pin" class="tool-btn" data-tip="固定/自動隱藏 (Pin)">📌</button>
+                    <button id="btn-theme" class="tool-btn" data-tip="切換主題 (Dark/Light)">☀️</button>
+                    <button id="btn-reset" class="tool-btn" data-tip="重置佈局與位置">↺</button>
+                    <button id="btn-edit" class="tool-btn" data-tip="編輯設定">⚙</button>
+                    <button id="btn-sos" class="tool-btn" data-tip="系統鍵盤SOS">🆘</button>
+                    <button id="btn-close" class="tool-btn" data-tip="關閉">✕</button>
+                </div>
+                <div id="macro-progress-container">
+                    <div id="macro-progress-bar"></div>
+                </div>
+            </div>
+            <div id="keys-container">
+                <canvas id="keyboard-canvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Key Editor Modal - Outside for independent scaling -->
+    <div id="key-editor-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>編輯按鍵</h3>
+                <div style="display: flex; margin-left: auto; align-items: center;">
+                    <button id="btn-editor-help" class="tool-btn" title="設定說明">❓</button>
+                    <button id="btn-editor-sos" class="tool-btn" title="系統小鍵盤 (SOS)"
+                        style="margin-right: 8px;">🆘</button>
+                    <button id="btn-close-modal" class="modal-close-btn">✕</button>
+                </div>
+            </div>
+            <div id="editor-help-box" class="help-info-box" style="display: none;">
+                <div class="help-title">💡 設定值 (Value) 說明</div>
+                • <b>單鍵碼</b>: 輸入 16 進位制 (如 <code>0x1B</code> 代表 Esc)<br>
+                • <b>執行程式</b>: 輸入完整路徑 (如 <code>C:\Windows\calc.exe</code>)<br>
+                • <b>自動化巨集</b>: 使用逗號分隔指令<br>
+                &nbsp;&nbsp;- <code>0xXX</code>: 模擬按鍵 (16 進位制)<br>
+                &nbsp;&nbsp;- <code>wXXXX</code>: 等待 (毫秒)<br>
+                &nbsp;&nbsp;範例: <code>0x26,w1000,0x28</code> (上鍵 -> 等 1 秒 -> 下鍵)
+            </div>
+            <div class="editor-grid">
+                <div class="editor-section">
+                    <label>主/英 (TL)</label>
+                    <div class="input-row">
+                        <input type="text" id="edit-tl-display" placeholder="標籤">
+                        <textarea id="edit-tl-value" placeholder="值" rows="1"></textarea>
+                        <div class="color-picker-mini">
+                            <input type="color" id="edit-tl-color" value="#f8fafc" title="文字顏色">
+                            <button id="btn-apply-tl-all" class="tiny-apply" title="套用此文字色到全鍵盤 TL">🎨</button>
+                            <div id="status-record-tl"
+                                style="display: none; color: #ef4444; font-size: 11px; font-weight: bold; margin-left: auto; align-items: center; gap: 4px;">
+                                🔴 錄製中...</div>
+                            <div style="margin-left: auto; display: flex; gap: 4px; align-items: center;">
+                                <button id="btn-browse-tl" class="tiny-apply" title="選擇執行檔">📂</button>
+                                <button id="btn-record-tl" class="tiny-apply" title="錄製巨集">⏺️</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 4px; padding-left: 4px;">
+                        <label
+                            style="font-size: 11px; color: var(--text-main); opacity: 0.7; cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none;"
+                            title="直接輸入模式 (不校驗)">
+                            <input type="checkbox" id="chk-direct-tl" style="width: 13px; height: 13px;"> 直接貼上文字 (不校驗)
+                        </label>
+                    </div>
+                </div>
+                <div class="editor-section">
+                    <label>Shift (TR)</label>
+                    <div class="input-row">
+                        <input type="text" id="edit-tr-display" placeholder="標籤">
+                        <textarea id="edit-tr-value" placeholder="值" rows="1"></textarea>
+                        <div class="color-picker-mini">
+                            <input type="color" id="edit-tr-color" value="#38bdf8" title="文字顏色">
+                            <button id="btn-apply-tr-all" class="tiny-apply" title="套用此文字色到全鍵盤 TR">🎨</button>
+                            <div id="status-record-tr"
+                                style="display: none; color: #ef4444; font-size: 11px; font-weight: bold; margin-left: auto; align-items: center; gap: 4px;">
+                                🔴 錄製中...</div>
+                            <div style="margin-left: auto; display: flex; gap: 4px; align-items: center;">
+                                <button id="btn-browse-tr" class="tiny-apply" title="選擇執行檔">📂</button>
+                                <button id="btn-record-tr" class="tiny-apply" title="錄製巨集">⏺️</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 4px; padding-left: 4px;">
+                        <label
+                            style="font-size: 11px; color: var(--text-main); opacity: 0.7; cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none;"
+                            title="直接輸入模式 (不校驗)">
+                            <input type="checkbox" id="chk-direct-tr" style="width: 13px; height: 13px;"> 直接貼上文字 (不校驗)
+                        </label>
+                    </div>
+                </div>
+                <div class="editor-section">
+                    <label>Fn (BL)</label>
+                    <div class="input-row">
+                        <input type="text" id="edit-bl-display" placeholder="標籤">
+                        <textarea id="edit-bl-value" placeholder="值" rows="1"></textarea>
+                        <div class="color-picker-mini">
+                            <input type="color" id="edit-bl-color" value="#4ade80" title="文字顏色">
+                            <button id="btn-apply-bl-all" class="tiny-apply" title="套用此文字色到全鍵盤 BL">🎨</button>
+                            <div id="status-record-bl"
+                                style="display: none; color: #ef4444; font-size: 11px; font-weight: bold; margin-left: auto; align-items: center; gap: 4px;">
+                                🔴 錄製中...</div>
+                            <div style="margin-left: auto; display: flex; gap: 4px; align-items: center;">
+                                <button id="btn-browse-bl" class="tiny-apply" title="選擇執行檔">📂</button>
+                                <button id="btn-record-bl" class="tiny-apply" title="錄製巨集">⏺️</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 4px; padding-left: 4px;">
+                        <label
+                            style="font-size: 11px; color: var(--text-main); opacity: 0.7; cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none;"
+                            title="直接輸入模式 (不校驗)">
+                            <input type="checkbox" id="chk-direct-bl" style="width: 13px; height: 13px;"> 直接貼上文字 (不校驗)
+                        </label>
+                    </div>
+                </div>
+                <div class="editor-section">
+                    <label>注音 (BR)</label>
+                    <div class="input-row">
+                        <input type="text" id="edit-br-display" placeholder="標籤">
+                        <textarea id="edit-br-value" placeholder="值" rows="1"></textarea>
+                        <div class="color-picker-mini">
+                            <input type="color" id="edit-br-color" value="#fbbf24" title="文字顏色">
+                            <button id="btn-apply-br-all" class="tiny-apply" title="套用此文字色到全鍵盤 BR">🎨</button>
+                            <div id="status-record-br"
+                                style="display: none; color: #ef4444; font-size: 11px; font-weight: bold; margin-left: auto; align-items: center; gap: 4px;">
+                                🔴 錄製中...</div>
+                            <div style="margin-left: auto; display: flex; gap: 4px; align-items: center;">
+                                <button id="btn-browse-br" class="tiny-apply" title="選擇執行檔">📂</button>
+                                <button id="btn-record-br" class="tiny-apply" title="錄製巨集">⏺️</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 4px; padding-left: 4px;">
+                        <label
+                            style="font-size: 11px; color: var(--text-main); opacity: 0.7; cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none;"
+                            title="直接輸入模式 (不校驗)">
+                            <input type="checkbox" id="chk-direct-br" style="width: 13px; height: 13px;"> 直接貼上文字 (不校驗)
+                        </label>
+                    </div>
+                </div>
+                <div class="editor-section full-width background-settings">
+                    <div class="color-picker-group">
+                        <div class="preview-container">
+                            <span class="tiny-label">預覽</span>
+                            <div id="key-preview" class="key-preview-box">
+                                <span class="preview-tl"></span>
+                                <span class="preview-tr"></span>
+                                <span class="preview-bl"></span>
+                                <span class="preview-br"></span>
+                                <span class="preview-center"></span>
+                            </div>
+                        </div>
+                        <div class="bg-picker-controls">
+                            <label>按鍵背景與邊框顏色</label>
+                            <div class="bg-picker-row">
+                                <input type="color" id="edit-bg-color" value="#1e293b" title="背景顏色">
+                                <input type="color" id="edit-border-color" value="#475569" title="邊框顏色">
+                                <button id="btn-apply-bg-border-all" class="apply-all-btn">🎨 套用到全部</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    <div id="custom-tooltip" class="custom-tooltip"></div>
+    <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>
