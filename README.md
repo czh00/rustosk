@@ -94,13 +94,16 @@ rust/
 ├── src-tauri/          # 後端原始碼 (Rust)
 │   ├── src/
 │   │   ├── system/     # Windows API 深度整合核心
-│   │   │   ├── window_manager.rs   # 視窗行為、拖拽、縮放與重置邏輯
+│   │   │   ├── window_manager.rs   # 視窗行為、拖曳、縮放與重置邏輯
 │   │   │   ├── input_detector.rs   # 焦點追蹤與輸入法偵測
-│   │   │   ├── keyboard_hook.rs    # 全域按鍵攔截與錄製掛鉤
-│   │   │   └── keyboard_simulator.rs # 模擬按鍵發送
-│   │   └── main.rs     # Tauri 指令入口與執行緒管理
+│   │   │   ├── input_hook.rs       # 全域實體鍵盤監聽與錄製掛鉤
+│   │   │   ├── keyboard_simulator.rs # 模擬按鍵與巨集發送
+│   │   │   └── mod.rs              # 系統模組宣告
+│   │   ├── lib.rs      # Tauri 核心初始化與指令註冊入口
+│   │   └── main.rs     # 程式進入點
 │   ├── tauri.conf.json # Tauri 建置設定 (版本、權限、打包)
-│   └── Cargo.toml      # Rust 依賴管理 (windows-rs, chrono 等)
+│   ├── Cargo.toml      # Rust 依賴管理 (windows-rs, chrono 等)
+│   └── build.rs        # Rust 建置指令碼
 └── index.html          # 前端進入點 (含編輯器模態框定義)
 ```
 

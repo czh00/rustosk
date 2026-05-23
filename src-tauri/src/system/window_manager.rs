@@ -379,12 +379,16 @@ use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SWP_NOZORDER};
 
 #[tauri::command]
 pub fn start_poll_drag(_window: WebviewWindow, _pointer_id: u32) {
-    // 保留為相容前端 UI 呼叫的空介面，實際拖曳邏輯由 WndProc 處理
+    // 此 API 保留以維持與前端舊版本之相容性。
+    // 目前實際的視窗拖曳行為已由底層 Windows 訊息處理常式 (WndProc) 中的 WM_NCHITTEST 原生接管，
+    // 以達到零延遲且無邊框之流暢拖拽體驗。
 }
 
 #[tauri::command]
 pub fn start_poll_resize(_window: WebviewWindow, _direction: String, _pointer_id: u32) {
-    // 保留為相容前端 UI 呼叫的空介面，實際縮放邏輯由 WndProc 處理
+    // 此 API 保留以維持與前端舊版本之相容性。
+    // 目前實際的視窗縮放與邊緣拉伸行為已由底層 Windows 訊息處理常式 (WndProc) 中的 WM_NCHITTEST 原生接管，
+    // 配合 aspect ratio 計算，提供高可靠度且不產生畫面鬼影框的原生拉伸體驗。
 }
 
 #[tauri::command]
