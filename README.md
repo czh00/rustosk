@@ -1,6 +1,7 @@
 # RustOSK — Tauri 智慧螢幕小鍵盤 ⌨️
 
 > 本專案是原 C# 版本 OSK 的 **Rust + Tauri** 強力進化版。結合了 Rust 的極致效能、Windows API 的深度整合，以及 Web 技術的流暢 UI，打造出反應最快、最智慧的虛擬鍵盤體驗。目前版本已進入穩定發佈階段，支援多種現代化功能。
+<img width="1595" height="533" alt="image" src="https://github.com/user-attachments/assets/d1b3f7da-143a-4160-a43e-78b9df3ab0d3" />
 
 ---
 
