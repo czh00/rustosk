@@ -270,7 +270,7 @@ fn start_manual_interaction(hwnd: HWND, direction: Option<&'static str>) {
             let ratio = if ratio_bits != 0 {
                 Some(f64::from_bits(ratio_bits))
             } else {
-                None
+                Some(2.38)
             };
 
             let offset_x = start_pt.x - start_rect.left;
@@ -866,6 +866,76 @@ unsafe extern "system" fn osk_wndproc(
 
     // 禁用系統選單或快捷鍵觸發的最大化
     if msg == WM_SYSCOMMAND && (wparam.0 & 0xFFF0) == SC_MAXIMIZE {
+        return LRESULT(0);
+    }
+
+    const WM_SIZING: u32 = 0x0214;
+    const WMSZ_LEFT: usize = 1;
+    const WMSZ_RIGHT: usize = 2;
+    const WMSZ_TOP: usize = 3;
+    const WMSZ_TOPLEFT: usize = 4;
+    const WMSZ_TOPRIGHT: usize = 5;
+    const WMSZ_BOTTOM: usize = 6;
+    const WMSZ_BOTTOMLEFT: usize = 7;
+    const WMSZ_BOTTOMRIGHT: usize = 8;
+
+    if msg == WM_SIZING {
+        let ratio_bits = TARGET_ASPECT_RATIO.load(Ordering::Relaxed);
+        let ratio = if ratio_bits != 0 {
+            f64::from_bits(ratio_bits)
+        } else {
+            2.38
+        };
+
+        if ratio > 0.0 {
+            let rect = &mut *(lparam.0 as *mut RECT);
+            let width = (rect.right - rect.left) as f64;
+            let height = (rect.bottom - rect.top) as f64;
+
+            match wparam.0 as usize {
+                WMSZ_LEFT | WMSZ_RIGHT => {
+                    let target_h = (width / ratio).round() as i32;
+                    rect.bottom = rect.top + target_h;
+                }
+                WMSZ_TOP | WMSZ_BOTTOM => {
+                    let target_w = (height * ratio).round() as i32;
+                    rect.right = rect.left + target_w;
+                }
+                WMSZ_TOPLEFT | WMSZ_TOPRIGHT => {
+                    let target_h = (width / ratio).round() as i32;
+                    rect.top = rect.bottom - target_h;
+                }
+                WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT => {
+                    let target_h = (width / ratio).round() as i32;
+                    rect.bottom = rect.top + target_h;
+                }
+                _ => {}
+            }
+            return LRESULT(1);
+        }
+    }
+
+    const WM_DPICHANGED: u32 = 0x02E0;
+    if msg == WM_DPICHANGED {
+        let suggested_rect = &*(lparam.0 as *const RECT);
+        let ratio_bits = TARGET_ASPECT_RATIO.load(Ordering::Relaxed);
+        let ratio = if ratio_bits != 0 {
+            f64::from_bits(ratio_bits)
+        } else {
+            2.38
+        };
+        let new_w = suggested_rect.right - suggested_rect.left;
+        let new_h = (new_w as f64 / ratio).round() as i32;
+        let _ = SetWindowPos(
+            hwnd,
+            HWND::default(),
+            suggested_rect.left,
+            suggested_rect.top,
+            new_w,
+            new_h,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+        keep_hwnd_in_screen(hwnd);
         return LRESULT(0);
     }
 

@@ -184,8 +184,19 @@ async function initApp() {
 
         const savedData = await invoke<string>('load_config').catch(() => "{}");
         const config = JSON.parse(savedData);
-        if (config.w && config.h && !isReset) {
-            await invoke('resize_window', { width: config.w, height: config.h });
+        if (config.w && !isReset) {
+            const baseHeightStr = getComputedStyle(document.documentElement).getPropertyValue('--base-height');
+            const baseWidthStr = getComputedStyle(document.documentElement).getPropertyValue('--base-width');
+            const baseWidth = parseFloat(baseWidthStr) || (isFull ? 1078 : 723);
+            const baseHeight = parseFloat(baseHeightStr) || (isFull ? 355 : 302);
+            const targetHeight = Math.ceil(config.w * (baseHeight / baseWidth));
+
+            isProgrammaticResize = true;
+            try {
+                await invoke('resize_window', { width: config.w, height: targetHeight });
+            } finally {
+                setTimeout(() => { isProgrammaticResize = false; }, 100);
+            }
         }
         if (config.rX !== undefined && config.rY !== undefined && !isFirstBoot) {
             await invoke('apply_relative_pos', { rx: config.rX, ry: config.rY });
@@ -355,6 +366,14 @@ async function saveCurrentConfig() {
         const physicalSize = await window.outerSize();
         const scaleFactor = await window.scaleFactor();
 
+        const baseHeightStr = getComputedStyle(document.documentElement).getPropertyValue('--base-height');
+        const baseWidthStr = getComputedStyle(document.documentElement).getPropertyValue('--base-width');
+        const baseWidth = parseFloat(baseWidthStr) || (isFull ? 1078 : 723);
+        const baseHeight = parseFloat(baseHeightStr) || (isFull ? 355 : 302);
+
+        const w = physicalSize.width / scaleFactor;
+        const h = Math.ceil(w * (baseHeight / baseWidth));
+
         const config: OSKConfig = {
             compactLayout: userCompactLayout,
             fullLayout: userFullLayout,
@@ -367,8 +386,8 @@ async function saveCurrentConfig() {
             rX: relPos[0],
             rY: relPos[1],
             opacity: parseFloat((document.getElementById('opacity-slider') as HTMLInputElement).value || "1"),
-            w: physicalSize.width / scaleFactor,
-            h: physicalSize.height / scaleFactor,
+            w: w,
+            h: h,
             themeOverrides: {}
         };
 
@@ -451,6 +470,9 @@ function renderKeys() {
     const keysHeight = currentLayout.length * (rowHeight + gap) - gap;
     const baseHeight = keysHeight + 34 + 8;
     document.documentElement.style.setProperty('--base-height', `${baseHeight}px`);
+
+    // 即時更新 Rust 端之長寬比限制
+    invoke('update_aspect_ratio', { width: baseWidth, height: baseHeight }).catch(() => {});
 
     let totalHeight = keysHeight;
 
@@ -1908,16 +1930,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 監聽視窗縮放事件（加入程式化調整保護）
+    let resizeSnapTimeout: any = null;
     window.addEventListener('resize', () => {
         if (isProgrammaticResize) return;
 
         userAdjustedSize = true;
         updateAppScale();
         renderKeys(); // 視窗縮放時重繪 Canvas
+
         if (moveTimeout) clearTimeout(moveTimeout);
         moveTimeout = setTimeout(() => {
             saveCurrentConfig();
         }, 500);
+
+        if (resizeSnapTimeout) clearTimeout(resizeSnapTimeout);
+        resizeSnapTimeout = setTimeout(async () => {
+            if (isProgrammaticResize || isEditMode) return;
+            const baseHeightStr = getComputedStyle(document.documentElement).getPropertyValue('--base-height');
+            const baseWidthStr = getComputedStyle(document.documentElement).getPropertyValue('--base-width');
+            const baseWidth = parseFloat(baseWidthStr) || (isFull ? 1078 : 723);
+            const baseHeight = parseFloat(baseHeightStr) || (isFull ? 355 : 302);
+            const currentScale = window.innerWidth / baseWidth;
+            const targetHeight = Math.ceil(baseHeight * currentScale);
+
+            if (Math.abs(window.innerHeight - targetHeight) > 2) {
+                isProgrammaticResize = true;
+                try {
+                    await invoke('resize_window', { width: window.innerWidth, height: targetHeight });
+                } finally {
+                    setTimeout(() => { isProgrammaticResize = false; }, 100);
+                }
+            }
+        }, 150);
     });
 });
 
