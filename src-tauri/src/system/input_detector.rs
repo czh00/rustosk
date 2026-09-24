@@ -135,10 +135,7 @@ pub fn check_caret() -> bool {
             // 模式 2: 自定義繪製但宣告 hwndCaret 的程式 (如 Chrome, VSCode)
             if !gui_info.hwndCaret.0.is_null() {
                 let class_name = get_window_class(h_fore);
-                let proc_name = get_process_name(h_fore).to_lowercase();
-                let is_search_or_start = proc_name == "searchhost.exe" 
-                    || proc_name == "startmenuexperiencehost.exe"
-                    || (proc_name == "explorer.exe" && class_name == "Windows.UI.Core.CoreWindow");
+                let is_search_or_start = crate::system::window_manager::is_search_or_start_window(h_fore);
                 if class_name != "Progman"
                     && class_name != "WorkerW"
                     && class_name != "Shell_TrayWnd"
@@ -364,12 +361,10 @@ pub fn update_osk_state() {
     let fg_hwnd = unsafe { GetForegroundWindow() };
     let fg_class = get_window_class(fg_hwnd);
     let proc_name = get_process_name(fg_hwnd).to_lowercase();
-    let is_search_or_start = proc_name == "searchhost.exe" 
-        || proc_name == "startmenuexperiencehost.exe"
-        || (proc_name == "explorer.exe" && fg_class == "Windows.UI.Core.CoreWindow");
+    let is_search_or_start = crate::system::window_manager::is_search_or_start_window(fg_hwnd);
     let is_ime_candidate = (fg_class.contains("IME")
         || fg_class.contains("Candidate")
-        || fg_class == "Windows.UI.Core.CoreWindow")
+        || (fg_class == "Windows.UI.Core.CoreWindow" && proc_name == "textinputhost.exe"))
         && !is_search_or_start;
 
     if let Ok(guard) = GLOBAL_WINDOW.lock() {
@@ -395,6 +390,10 @@ pub fn update_osk_state() {
                     hide_osk();
                 } else if is_ime_candidate {
                     // 若正在顯示輸入法候選字，維持現狀但不強制執行置頂週期
+                    // 但若先前正在避讓開始選單，而現在開始選單已關閉，必須恢復原位！
+                    if !is_search_or_start && crate::system::window_manager::IS_AVOIDING.load(Ordering::Relaxed) {
+                        crate::system::window_manager::restore_avoidance_position();
+                    }
                 } else if has_caret || is_pinned || is_osk_focused {
                     show_osk_no_activate();
                 } else {
@@ -412,9 +411,11 @@ pub fn start_detector(window: WebviewWindow) {
 
     update_osk_state();
 
-    // 定時輪詢備援機制
+    // 定時輪詢備援機制 (避讓中提升頻率至 200ms 以便開始選單關閉時即時恢復)
     std::thread::spawn(|| loop {
-        std::thread::sleep(std::time::Duration::from_millis(600));
+        let is_avoiding = crate::system::window_manager::IS_AVOIDING.load(Ordering::Relaxed);
+        let sleep_ms = if is_avoiding { 200 } else { 600 };
+        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
         update_osk_state();
     });
 

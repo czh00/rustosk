@@ -41,15 +41,74 @@ static IS_MACRO_RUNNING: AtomicBool = AtomicBool::new(false);
 static MACRO_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 pub static IS_FOCUS_LOCKED: AtomicBool = AtomicBool::new(false);
+pub static IS_AVOIDING: AtomicBool = AtomicBool::new(false);
 static OUR_PID: AtomicIsize = AtomicIsize::new(0);
 static LAST_FOCUS_TIME: AtomicU64 = AtomicU64::new(0);
 
 lazy_static::lazy_static! {
     static ref KNOWN_HWNDS: Mutex<HashSet<isize>> = Mutex::new(HashSet::new());
     static ref USER_MANUAL_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+    static ref PRE_AVOIDANCE_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+}
+
+pub fn is_search_or_start_window(hwnd: HWND) -> bool {
+    unsafe {
+        if hwnd.0.is_null() || !IsWindowVisible(hwnd).as_bool() {
+            return false;
+        }
+        let proc_name = get_process_name(hwnd).to_lowercase();
+        let class_name = get_window_class(hwnd);
+        proc_name == "searchhost.exe"
+            || proc_name == "startmenuexperiencehost.exe"
+            || (proc_name == "explorer.exe" && class_name == "Windows.UI.Core.CoreWindow")
+    }
+}
+
+pub fn restore_avoidance_position() {
+    let hwnd_ptr = CACHED_HWND.load(Ordering::Relaxed);
+    if hwnd_ptr != 0 {
+        restore_to_saved_pos(HWND(hwnd_ptr as _));
+    }
+}
+
+pub fn restore_to_saved_pos(hwnd: HWND) {
+    unsafe {
+        IS_AVOIDING.store(false, Ordering::Relaxed);
+        let restore_pos = {
+            if let Ok(mut pre) = PRE_AVOIDANCE_POS.lock() {
+                pre.take()
+            } else {
+                None
+            }
+        }.or_else(|| {
+            if let Ok(manual) = USER_MANUAL_POS.lock() {
+                *manual
+            } else {
+                None
+            }
+        });
+
+        if let Some((rx, ry)) = restore_pos {
+            let _ = SetWindowPos(
+                hwnd,
+                HWND::default(),
+                rx,
+                ry,
+                0,
+                0,
+                SWP_NOSIZE
+                    | SWP_NOACTIVATE
+                    | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
+            );
+            keep_hwnd_in_screen(hwnd);
+        }
+    }
 }
 
 pub fn save_user_manual_position(hwnd: HWND) {
+    if IS_AVOIDING.load(Ordering::Relaxed) {
+        return;
+    }
     unsafe {
         let mut rect = RECT::default();
         if windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect).is_ok() {
@@ -58,6 +117,11 @@ pub fn save_user_manual_position(hwnd: HWND) {
             }
         }
     }
+}
+
+#[tauri::command]
+pub fn is_avoiding() -> bool {
+    IS_AVOIDING.load(Ordering::Relaxed)
 }
 
 #[tauri::command]
@@ -121,8 +185,9 @@ pub fn open_sos(window: WebviewWindow) {
 pub fn set_pinned(pinned: bool) {
     IS_PINNED.store(pinned, Ordering::Relaxed);
     if pinned {
-        // 開啟固定模式時，自動解除手動隱藏狀態
+        // 開啟固定模式時，自動解除手動隱藏狀態並恢復避讓前位置
         IS_MANUALLY_HIDDEN.store(false, Ordering::Relaxed);
+        restore_avoidance_position();
     }
     std::thread::spawn(|| {
         update_osk_state();
@@ -598,54 +663,56 @@ pub fn adjust_osk_position_for_avoidance(hwnd: HWND) -> bool {
         let work_width = work_rect.right - work_rect.left;
 
         let fg_hwnd = GetForegroundWindow();
-        let mut proc_name = String::new();
-        let mut fg_class = String::new();
-        if !fg_hwnd.0.is_null() {
-            proc_name = get_process_name(fg_hwnd).to_lowercase();
-            fg_class = get_window_class(fg_hwnd);
-        }
+        let is_search_or_start = is_search_or_start_window(fg_hwnd);
+        let is_pinned = IS_PINNED.load(Ordering::Relaxed);
 
-        let is_search_or_start = proc_name == "searchhost.exe"
-            || proc_name == "startmenuexperiencehost.exe"
-            || (proc_name == "explorer.exe" && fg_class == "Windows.UI.Core.CoreWindow");
-
-        let (target_x, target_y) = if is_search_or_start {
-            // 搜尋或開始選單，強制放在正上方
-            (
-                work_rect.left + (work_width - osk_width) / 2,
-                work_rect.top,
-            )
-        } else {
-            // 還原到手動記憶位置
-            let pos_opt = if let Ok(pos) = USER_MANUAL_POS.lock() {
-                *pos
-            } else {
-                None
-            };
-
-            if let Some((mx, my)) = pos_opt {
-                (mx, my)
-            } else {
-                // 若尚未有記憶位置，保持不變
-                (osk_rect.left, osk_rect.top)
+        if is_pinned {
+            // 📍狀態時不要因開始選單出現而改變位置
+            if IS_AVOIDING.load(Ordering::Relaxed) {
+                restore_to_saved_pos(hwnd);
             }
-        };
-
-        if osk_rect.left != target_x || osk_rect.top != target_y {
-            let _ = SetWindowPos(
-                hwnd,
-                HWND::default(),
-                target_x,
-                target_y,
-                0,
-                0,
-                SWP_NOSIZE
-                    | SWP_NOACTIVATE
-                    | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
-            );
-            keep_hwnd_in_screen(hwnd);
+            return is_search_or_start;
         }
-        
+
+        if is_search_or_start {
+            // 首次進入避讓狀態時，記錄避讓前的確切位置
+            if !IS_AVOIDING.load(Ordering::Relaxed) {
+                if let Ok(mut pre) = PRE_AVOIDANCE_POS.lock() {
+                    *pre = Some((osk_rect.left, osk_rect.top));
+                }
+                if let Ok(mut manual) = USER_MANUAL_POS.lock() {
+                    if manual.is_none() {
+                        *manual = Some((osk_rect.left, osk_rect.top));
+                    }
+                }
+                IS_AVOIDING.store(true, Ordering::Relaxed);
+            }
+
+            // 搜尋或開始選單，強制放在正上方中央
+            let target_x = work_rect.left + (work_width - osk_width) / 2;
+            let target_y = work_rect.top;
+
+            if osk_rect.left != target_x || osk_rect.top != target_y {
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND::default(),
+                    target_x,
+                    target_y,
+                    0,
+                    0,
+                    SWP_NOSIZE
+                        | SWP_NOACTIVATE
+                        | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
+                );
+                keep_hwnd_in_screen(hwnd);
+            }
+        } else {
+            // 開始選單已關閉，若處於避讓狀態，還原到避讓前位置
+            if IS_AVOIDING.load(Ordering::Relaxed) {
+                restore_to_saved_pos(hwnd);
+            }
+        }
+
         is_search_or_start
     }
 }
@@ -721,7 +788,11 @@ pub fn hide_osk() {
     let hwnd_ptr = CACHED_HWND.load(Ordering::Relaxed);
     if hwnd_ptr != 0 {
         unsafe {
-            let _ = ShowWindow(HWND(hwnd_ptr as _), SW_HIDE);
+            let hwnd = HWND(hwnd_ptr as _);
+            if IS_AVOIDING.load(Ordering::Relaxed) {
+                restore_to_saved_pos(hwnd);
+            }
+            let _ = ShowWindow(hwnd, SW_HIDE);
         }
     }
 }
@@ -941,6 +1012,11 @@ unsafe extern "system" fn osk_wndproc(
 
     if msg == WM_EXITSIZEMOVE {
         keep_hwnd_in_screen(hwnd);
+        IS_AVOIDING.store(false, Ordering::Relaxed);
+        if let Ok(mut pre) = PRE_AVOIDANCE_POS.lock() {
+            *pre = None;
+        }
+        save_user_manual_position(hwnd);
     }
 
     let prev_proc = PREV_WNDPROC.load(Ordering::Relaxed);
@@ -1095,7 +1171,28 @@ pub fn resize_and_recenter(
 
 #[tauri::command]
 pub fn get_relative_pos(window: WebviewWindow) -> Result<(f64, f64), String> {
-    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let pre_pos = if IS_AVOIDING.load(Ordering::Relaxed) {
+        if let Ok(pre) = PRE_AVOIDANCE_POS.lock() {
+            *pre
+        } else {
+            None
+        }.or_else(|| {
+            if let Ok(manual) = USER_MANUAL_POS.lock() {
+                *manual
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+
+    let (px, py) = if let Some((x, y)) = pre_pos {
+        (x, y)
+    } else {
+        let pos = window.outer_position().map_err(|e| e.to_string())?;
+        (pos.x, pos.y)
+    };
 
     // 優先獲取當前視窗所在的螢幕資訊
     let monitor_opt = window
@@ -1109,8 +1206,8 @@ pub fn get_relative_pos(window: WebviewWindow) -> Result<(f64, f64), String> {
         let origin = monitor.position(); // 螢幕左上角的全局座標
 
         // 計算相對於該螢幕原點的比例 (0.0 ~ 1.0 代表在該螢幕內)
-        let rx = (pos.x - origin.x) as f64 / size.width as f64;
-        let ry = (pos.y - origin.y) as f64 / size.height as f64;
+        let rx = (px - origin.x) as f64 / size.width as f64;
+        let ry = (py - origin.y) as f64 / size.height as f64;
         return Ok((rx, ry));
     }
 

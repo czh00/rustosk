@@ -361,6 +361,10 @@ function updateLockUI(vk: number, isActive: boolean) {
 
 async function saveCurrentConfig() {
     try {
+        const isAvoiding = await invoke<boolean>('is_avoiding').catch(() => false);
+        if (isAvoiding) {
+            return; // 處於開始選單避讓狀態時，不覆蓋視窗設定，避免存入避讓置頂座標
+        }
         const relPos = await invoke<[number, number]>('get_relative_pos');
         const window = getCurrentWindow();
         const physicalSize = await window.outerSize();
@@ -1904,7 +1908,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const toolbarLeft = document.querySelector('.toolbar-left') as HTMLElement;
             if (toolbarLeft) {
-                toolbarLeft.setAttribute('data-tip', `焦點: ${data.app}\n輸入法: ${imeStr}\n剪貼簿: ${data.clipboard || '無'}`);
+                toolbarLeft.removeAttribute('data-tip');
+                toolbarLeft.removeAttribute('data-tip-base');
             }
 
             // 語系同步：無條件同步 isZhuyinMode 以驅動靜態/動態標籤高亮
@@ -1977,6 +1982,13 @@ function setupTooltips() {
     const tooltip = document.getElementById('custom-tooltip');
     if (!tooltip) return;
 
+    // 清理左上角區域及標題列拖曳區的 data-tip，避免觸控螢幕無滑鼠時持續遮擋視線
+    const toolbarLeft = document.querySelector('.toolbar-left');
+    if (toolbarLeft) {
+        toolbarLeft.removeAttribute('data-tip');
+        toolbarLeft.removeAttribute('data-tip-base');
+    }
+
     // 清理所有原生 title
     const allWithTitle = document.querySelectorAll('[title]');
     allWithTitle.forEach(el => {
@@ -2020,12 +2032,25 @@ function setupTooltips() {
         tooltip.style.transform = `translateX(-50%) translateY(0)`;
     };
 
+    let lastTouchTime = 0;
+    let tooltipTimeout: any = null;
+
     const hideTooltip = () => {
+        if (tooltipTimeout) {
+            clearTimeout(tooltipTimeout);
+            tooltipTimeout = null;
+        }
         currentHoverTarget = null;
         tooltip.classList.remove('visible');
     };
 
     const showTooltip = (target: HTMLElement) => {
+        // 若最近 1 秒內有觸控操作，不顯示懸停提示（避免觸控螢幕無滑鼠時懸停提示滯留遮擋視線）
+        if (Date.now() - lastTouchTime < 1000) {
+            hideTooltip();
+            return;
+        }
+
         currentHoverTarget = target;
         const tip = target.getAttribute('data-tip');
         if (!tip) {
@@ -2037,10 +2062,34 @@ function setupTooltips() {
         tooltip.classList.add('visible');
         // 必須先顯示才能獲取正確的 tipRect
         updatePosition(target);
+
+        if (tooltipTimeout) clearTimeout(tooltipTimeout);
+        tooltipTimeout = setTimeout(hideTooltip, 3000);
     };
+
+    // 觸控螢幕防護：觸控開始或觸控指針按下/移動時，立刻關閉提示並記錄時間
+    window.addEventListener('touchstart', () => {
+        lastTouchTime = Date.now();
+        hideTooltip();
+    }, { passive: true, capture: true });
+
+    window.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+            lastTouchTime = Date.now();
+            hideTooltip();
+        }
+    }, { passive: true, capture: true });
+
+    window.addEventListener('pointermove', (e) => {
+        if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+            lastTouchTime = Date.now();
+            if (currentHoverTarget) hideTooltip();
+        }
+    }, { passive: true, capture: true });
 
     // 使用事件代理處理所有 data-tip
     document.addEventListener('mouseover', (e) => {
+        if (Date.now() - lastTouchTime < 1000) return;
         const target = (e.target as HTMLElement).closest('[data-tip]') as HTMLElement;
         if (target) {
             showTooltip(target);
@@ -2048,6 +2097,10 @@ function setupTooltips() {
     });
 
     document.addEventListener('mousemove', () => {
+        if (Date.now() - lastTouchTime < 1000) {
+            if (currentHoverTarget) hideTooltip();
+            return;
+        }
         if (!currentHoverTarget) return;
         
         // 如果還在同一個目標上，且 tooltip 可見，則更新位置（處理可能發生的佈局變動）
@@ -2086,7 +2139,7 @@ function setupTooltips() {
     // 究極防護：定時監控機制 (Watchdog)
     setInterval(() => {
         if (currentHoverTarget) {
-            if (!currentHoverTarget.matches(':hover')) {
+            if (Date.now() - lastTouchTime < 1000 || !currentHoverTarget.matches(':hover')) {
                 hideTooltip();
             }
         }

@@ -43,7 +43,8 @@ pub fn run() {
             system::window_manager::start_poll_resize,
             system::window_manager::execute_app,
             system::window_manager::set_recording_mode,
-            system::window_manager::stop_macro
+            system::window_manager::stop_macro,
+            system::window_manager::is_avoiding
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
