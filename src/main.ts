@@ -1124,9 +1124,7 @@ function handleKeyPressDirect(key: KeyDefinition) {
     if (key.code === 0x5D) {
         isZhuyinMode = !isZhuyinMode;
         updateKeyboardDynamicMod();
-        if (isDynamic) {
-            renderKeys();
-        }
+        renderKeys();
         invoke('set_pime_mode', { isZh: isZhuyinMode });
         invoke('simulate_key', { vkCode: 0xA0, isKeyUp: false });
         setTimeout(() => invoke('simulate_key', { vkCode: 0xA0, isKeyUp: true }), 50);
@@ -1918,15 +1916,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 toolbarLeft.removeAttribute('data-tip-base');
             }
 
-            // 語系同步：無條件同步 isZhuyinMode 以驅動靜態/動態標籤高亮
+            // 語系同步：無條件同步 isZhuyinMode 以驅動靜態/動態標籤高亮與按鍵板面
             if (data.is_zh !== isZhuyinMode) {
                 isZhuyinMode = data.is_zh;
                 updateKeyboardDynamicMod(); // 同步容器 class (mod-zh) 以驅動角落高亮
-
-                // 僅在開啟「動態顯示」時才更換按鍵板面 (En 變 ㄅ)
-                if (isDynamic) {
-                    renderKeys();
-                }
+                renderKeys();
             }
         } catch (err) { }
     });

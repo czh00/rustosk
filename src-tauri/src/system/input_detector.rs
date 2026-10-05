@@ -37,6 +37,7 @@ lazy_static! {
     pub static ref PIME_ZH_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
     pub static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static ref LAST_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 }
 
 #[tauri::command]
@@ -227,6 +228,12 @@ pub fn is_ime_active() -> bool {
             PIME_ZH_MODE.store(true, Ordering::Relaxed);
         }
 
+        // 若切換至新的前景執行緒或視窗，且先前記錄為英文模式，重設為中文模式 (符合新焦點視窗預設開啟中文行為)
+        let prev_thread = LAST_THREAD_ID.swap(thread_id, Ordering::Relaxed);
+        if prev_thread != thread_id && !PIME_ZH_MODE.load(Ordering::Relaxed) {
+            PIME_ZH_MODE.store(true, Ordering::Relaxed);
+        }
+
         let ime_wnd = ImmGetDefaultIMEWnd(target_hwnd);
         let mut is_chinese = false;
         let mut wm_control_responded = false;
@@ -257,16 +264,14 @@ pub fn is_ime_active() -> bool {
                 Some(&mut res_conv),
             );
 
-            // 僅當輸入法明確支援 IMM32 且回報 res_open != 0 (IME 處於開啟狀態) 時才認定回應
-            if ok_open.0 != 0 && res_open != 0 {
-                wm_control_responded = true;
+            // 僅當輸入法明確支援 IMM32 原生中文模式 (res_conv & IME_CMODE_NATIVE != 0) 時才認定回應中文
+            // 勿因 res_conv == 0 將純 TSF 輸入法 (如 PIME 新酷音，不實作 IMM32 轉換模式) 誤判為英文模式！
+            if ok_open.0 != 0 && res_open != 0 && ok_conv.0 != 0 {
                 let is_native = (res_conv as u32 & IME_CMODE_NATIVE.0) != 0;
                 if is_native {
+                    wm_control_responded = true;
                     is_chinese = true;
                     PIME_ZH_MODE.store(true, Ordering::Relaxed);
-                } else if ok_conv.0 != 0 {
-                    is_chinese = false;
-                    PIME_ZH_MODE.store(false, Ordering::Relaxed);
                 }
             }
         }
@@ -281,13 +286,11 @@ pub fn is_ime_active() -> bool {
                 let mut sentence = IME_SENTENCE_MODE(0);
                 if ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool() {
                     if is_open {
-                        wm_control_responded = true;
                         let is_native = (conv.0 & IME_CMODE_NATIVE.0) != 0;
                         if is_native {
+                            wm_control_responded = true;
                             is_chinese = true;
                             PIME_ZH_MODE.store(true, Ordering::Relaxed);
-                        } else {
-                            PIME_ZH_MODE.store(false, Ordering::Relaxed);
                         }
                     }
                 }
@@ -295,8 +298,8 @@ pub fn is_ime_active() -> bool {
             }
         }
 
-        // 4. 若為純 TSF 輸入法 (如 PIME 新酷音)，WM_IME_CONTROL 與 IMM API 皆不會回應 (皆為 0)
-        // 此時既然當前語系為中文 (0x0404 等)，採用追蹤的 PIME_ZH_MODE 狀態 (預設中文，支援 Shift 單擊切換)
+        // 4. 若未明確偵測到 IMM32 原生中文模式 (包含純 TSF 輸入法如 PIME 新酷音)
+        // 此時當前語系為中文 (0x0404 等)，採用追蹤的 PIME_ZH_MODE 狀態 (支援 Shift 單擊與 OSK「En / ㄅ」切換)
         if !wm_control_responded {
             is_chinese = PIME_ZH_MODE.load(Ordering::Relaxed);
         }

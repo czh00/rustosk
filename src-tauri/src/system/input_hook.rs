@@ -102,11 +102,38 @@ unsafe extern "system" fn keyboard_hook_proc(
 
         let is_injected = (kbd_struct.flags.0 & 0x01) != 0;
 
-        // 偵測實體鍵盤單擊 Shift (排除軟體模擬按鍵，按下放開 < 500ms 且中間無其他按鍵)，用於同步 PIME 等無 WM_IME_CONTROL 的輸入法中英切換
+        // 偵測實體鍵盤單擊 Shift 與切換輸入法組合鍵 (排除軟體模擬按鍵)
         if !is_injected {
             if is_down {
+                // 檢查是否為 Win + Space (切換輸入法)
+                if vk == 0x20 {
+                    let win_down = unsafe {
+                        (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x5B) as u16 & 0x8000 != 0)
+                            || (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x5C) as u16 & 0x8000 != 0)
+                    };
+                    if win_down {
+                        crate::system::input_detector::set_pime_mode(true);
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            crate::system::input_detector::update_osk_state();
+                        });
+                    }
+                }
+
                 if vk == 0x10 || vk == 0xA0 || vk == 0xA1 {
-                    if !SHIFT_SOLO.load(Ordering::SeqCst) {
+                    let alt_or_ctrl = unsafe {
+                        (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x12) as u16 & 0x8000 != 0)
+                            || (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x11) as u16 & 0x8000 != 0)
+                    };
+                    if alt_or_ctrl {
+                        // Alt + Shift 或 Ctrl + Shift 切換輸入法，重設為中文模式
+                        crate::system::input_detector::set_pime_mode(true);
+                        SHIFT_SOLO.store(false, Ordering::SeqCst);
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            crate::system::input_detector::update_osk_state();
+                        });
+                    } else if !SHIFT_SOLO.load(Ordering::SeqCst) {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
