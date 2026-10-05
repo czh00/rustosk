@@ -18,6 +18,7 @@ use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, SetWinEventHook, UIA_ComboBoxControlTypeId,
     UIA_EditControlTypeId, HWINEVENTHOOK,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd, ImmGetOpenStatus,
     ImmReleaseContext, IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
@@ -32,6 +33,18 @@ lazy_static! {
     static ref GLOBAL_WINDOW: Mutex<Option<WebviewWindow>> = Mutex::new(None);
     static ref UPDATE_COUNTER: AtomicUsize = AtomicUsize::new(0);
     static ref DIAG_ID: AtomicUsize = AtomicUsize::new(0);
+    pub static ref PIME_ZH_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+}
+
+pub fn toggle_pime_mode() {
+    PIME_ZH_MODE.fetch_xor(true, Ordering::SeqCst);
+}
+
+#[allow(dead_code)]
+pub fn set_pime_mode(val: bool) {
+    PIME_ZH_MODE.store(val, Ordering::SeqCst);
 }
 
 // Get the class of a window
@@ -159,6 +172,25 @@ pub fn is_ime_active() -> bool {
             return false;
         }
 
+        // 判斷前景視窗是否為 OSK 本身，若為 OSK 則維持最後偵測到的中文狀態，避免在點擊 OSK 時跳回英文
+        if let Ok(guard) = GLOBAL_WINDOW.lock() {
+            if let Some(window) = guard.as_ref() {
+                if let Ok(our_hwnd) = window.hwnd() {
+                    if (hwnd_fore.0 as usize) == (our_hwnd.0 as usize) {
+                        return LAST_ZH_STATE.load(Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+
+        // 若前景視窗為輸入法候選字視窗 (包含 PIME 的 LibImeWindow)，必定處於中文選字狀態
+        let fg_class = get_window_class(hwnd_fore);
+        if fg_class.contains("IME") || fg_class.contains("Candidate") || fg_class == "LibImeWindow" {
+            PIME_ZH_MODE.store(true, Ordering::Relaxed);
+            LAST_ZH_STATE.store(true, Ordering::Relaxed);
+            return true;
+        }
+
         let mut pid = 0;
         let thread_id = GetWindowThreadProcessId(hwnd_fore, Some(&mut pid));
 
@@ -177,10 +209,29 @@ pub fn is_ime_active() -> bool {
             hwnd_fore
         };
 
+        // 1. 檢查目標焦點執行緒的鍵盤佈局語系 (HKL)
+        let hkl = GetKeyboardLayout(thread_id);
+        let lang_id = (hkl.0 as usize) & 0xFFFF;
+        let primary_lang = lang_id & 0x03FF;
+        let is_chinese_layout = primary_lang == 0x0004;
+
+        // 若當前鍵盤佈局不是中文語系 (例如英文 0x0409)，直接判定為英文模式
+        if !is_chinese_layout {
+            WAS_CHINESE_LAYOUT.store(false, Ordering::Relaxed);
+            LAST_ZH_STATE.store(false, Ordering::Relaxed);
+            return false;
+        }
+
+        // 若剛剛從非中文語系切換回中文語系，自動將 PIME 狀態重設為中文 (PIME 啟動預設為中文模式)
+        if !WAS_CHINESE_LAYOUT.swap(true, Ordering::Relaxed) {
+            PIME_ZH_MODE.store(true, Ordering::Relaxed);
+        }
+
         let ime_wnd = ImmGetDefaultIMEWnd(target_hwnd);
         let mut is_chinese = false;
+        let mut wm_control_responded = false;
 
-        // 優先嘗試使用 WM_IME_CONTROL 獲取狀態 (支援 Weasel 小狼毫等 TSF)
+        // 2. 優先嘗試使用 WM_IME_CONTROL 獲取狀態 (支援微軟新注音、Weasel 小狼毫等支援 IMM32 的輸入法)
         if !ime_wnd.0.is_null() {
             let res_open = SendMessageW(
                 ime_wnd,
@@ -195,36 +246,52 @@ pub fn is_ime_active() -> bool {
                 LPARAM(0),
             );
 
-            let is_open = res_open.0 != 0;
-            let is_native = (res_conv.0 as u32 & IME_CMODE_NATIVE.0) != 0;
-            if is_open && is_native {
-                is_chinese = true;
+            // 若 IME 支援 WM_IME_CONTROL 並回傳有效狀態
+            if res_open.0 != 0 {
+                wm_control_responded = true;
+                let is_native = (res_conv.0 as u32 & IME_CMODE_NATIVE.0) != 0;
+                if is_native {
+                    is_chinese = true;
+                    PIME_ZH_MODE.store(true, Ordering::Relaxed);
+                } else if res_conv.0 != 0 {
+                    PIME_ZH_MODE.store(false, Ordering::Relaxed);
+                }
+            } else if res_conv.0 != 0 {
+                // res_open == 0 但 res_conv != 0，表示輸入法明確回報當前已關閉/英數模式 (如微軟新注音按 Shift)
+                wm_control_responded = true;
+                is_chinese = false;
+                PIME_ZH_MODE.store(false, Ordering::Relaxed);
             }
         }
 
-        // 回退到標準 IMM API 偵測
-        if !is_chinese {
-            let context_hwnd = if !ime_wnd.0.is_null() {
-                ime_wnd
-            } else {
-                target_hwnd
-            };
-
-            let himc = ImmGetContext(context_hwnd);
+        // 3. 標準 IMM API 備援偵測 (針對同執行緒或傳統 IMM32 應用程式)
+        if !wm_control_responded && !target_hwnd.0.is_null() {
+            let himc = ImmGetContext(target_hwnd);
             if !himc.0.is_null() {
                 let is_open = ImmGetOpenStatus(himc).as_bool();
                 let mut conv = IME_CONVERSION_MODE(0);
                 let mut sentence = IME_SENTENCE_MODE(0);
                 if ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool() {
+                    wm_control_responded = true;
                     let is_native = (conv.0 & IME_CMODE_NATIVE.0) != 0;
                     if is_open && is_native {
                         is_chinese = true;
+                        PIME_ZH_MODE.store(true, Ordering::Relaxed);
+                    } else {
+                        PIME_ZH_MODE.store(false, Ordering::Relaxed);
                     }
                 }
-                let _ = ImmReleaseContext(context_hwnd, himc);
+                let _ = ImmReleaseContext(target_hwnd, himc);
             }
         }
 
+        // 4. 若為純 TSF 輸入法 (如 PIME 新酷音)，WM_IME_CONTROL 與 IMM API 皆不會回應 (皆為 0)
+        // 此時既然當前語系為中文 (0x0404 等)，採用追蹤的 PIME_ZH_MODE 狀態 (預設中文，支援 Shift 單擊切換)
+        if !wm_control_responded {
+            is_chinese = PIME_ZH_MODE.load(Ordering::Relaxed);
+        }
+
+        LAST_ZH_STATE.store(is_chinese, Ordering::Relaxed);
         is_chinese
     }
 }
@@ -364,6 +431,7 @@ pub fn update_osk_state() {
     let is_search_or_start = crate::system::window_manager::is_search_or_start_window(fg_hwnd);
     let is_ime_candidate = (fg_class.contains("IME")
         || fg_class.contains("Candidate")
+        || fg_class == "LibImeWindow"
         || (fg_class == "Windows.UI.Core.CoreWindow" && proc_name == "textinputhost.exe"))
         && !is_search_or_start;
 

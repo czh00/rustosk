@@ -2983,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "rustosk"
-version = "1.5.7"
+version = "1.5.8"
 dependencies = [
  "arboard",
  "chrono",

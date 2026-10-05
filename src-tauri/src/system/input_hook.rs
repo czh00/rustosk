@@ -26,6 +26,8 @@ lazy_static! {
         let (tx, rx) = std::sync::mpsc::channel();
         (tx, Mutex::new(rx))
     };
+    static ref SHIFT_DOWN_TIME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static ref SHIFT_SOLO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 }
 
 #[derive(Serialize, Clone)]
@@ -96,6 +98,41 @@ unsafe extern "system" fn keyboard_hook_proc(
         let wp = w_param.0 as u32;
         let is_down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
         let is_up = wp == WM_KEYUP || wp == WM_SYSKEYUP;
+        let vk = kbd_struct.vkCode;
+
+        // 偵測單擊 Shift (按下放開 < 500ms 且中間無其他按鍵)，用於同步 PIME 等無 WM_IME_CONTROL 的輸入法中英切換
+        if is_down {
+            if vk == 0x10 || vk == 0xA0 || vk == 0xA1 {
+                if !SHIFT_SOLO.load(Ordering::SeqCst) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    SHIFT_DOWN_TIME.store(now, Ordering::SeqCst);
+                    SHIFT_SOLO.store(true, Ordering::SeqCst);
+                }
+            } else {
+                SHIFT_SOLO.store(false, Ordering::SeqCst);
+            }
+        } else if is_up {
+            if vk == 0x10 || vk == 0xA0 || vk == 0xA1 {
+                if SHIFT_SOLO.swap(false, Ordering::SeqCst) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let down_time = SHIFT_DOWN_TIME.load(Ordering::SeqCst);
+                    let elapsed = now.saturating_sub(down_time);
+                    if elapsed < 500 {
+                        crate::system::input_detector::toggle_pime_mode();
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            crate::system::input_detector::update_osk_state();
+                        });
+                    }
+                }
+            }
+        }
 
         let is_recording = IS_RECORDING.load(Ordering::SeqCst);
 

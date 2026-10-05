@@ -1122,6 +1122,11 @@ function handleKeyPressDirect(key: KeyDefinition) {
     }
 
     if (key.code === 0x5D) {
+        isZhuyinMode = !isZhuyinMode;
+        updateKeyboardDynamicMod();
+        if (isDynamic) {
+            renderKeys();
+        }
         invoke('simulate_key', { vkCode: 0xA0, isKeyUp: false });
         setTimeout(() => invoke('simulate_key', { vkCode: 0xA0, isKeyUp: true }), 50);
         return;
