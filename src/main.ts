@@ -1127,6 +1127,7 @@ function handleKeyPressDirect(key: KeyDefinition) {
         if (isDynamic) {
             renderKeys();
         }
+        invoke('set_pime_mode', { isZh: isZhuyinMode });
         invoke('simulate_key', { vkCode: 0xA0, isKeyUp: false });
         setTimeout(() => invoke('simulate_key', { vkCode: 0xA0, isKeyUp: true }), 50);
         return;

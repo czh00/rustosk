@@ -100,35 +100,39 @@ unsafe extern "system" fn keyboard_hook_proc(
         let is_up = wp == WM_KEYUP || wp == WM_SYSKEYUP;
         let vk = kbd_struct.vkCode;
 
-        // 偵測單擊 Shift (按下放開 < 500ms 且中間無其他按鍵)，用於同步 PIME 等無 WM_IME_CONTROL 的輸入法中英切換
-        if is_down {
-            if vk == 0x10 || vk == 0xA0 || vk == 0xA1 {
-                if !SHIFT_SOLO.load(Ordering::SeqCst) {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    SHIFT_DOWN_TIME.store(now, Ordering::SeqCst);
-                    SHIFT_SOLO.store(true, Ordering::SeqCst);
+        let is_injected = (kbd_struct.flags.0 & 0x01) != 0;
+
+        // 偵測實體鍵盤單擊 Shift (排除軟體模擬按鍵，按下放開 < 500ms 且中間無其他按鍵)，用於同步 PIME 等無 WM_IME_CONTROL 的輸入法中英切換
+        if !is_injected {
+            if is_down {
+                if vk == 0x10 || vk == 0xA0 || vk == 0xA1 {
+                    if !SHIFT_SOLO.load(Ordering::SeqCst) {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        SHIFT_DOWN_TIME.store(now, Ordering::SeqCst);
+                        SHIFT_SOLO.store(true, Ordering::SeqCst);
+                    }
+                } else {
+                    SHIFT_SOLO.store(false, Ordering::SeqCst);
                 }
-            } else {
-                SHIFT_SOLO.store(false, Ordering::SeqCst);
-            }
-        } else if is_up {
-            if vk == 0x10 || vk == 0xA0 || vk == 0xA1 {
-                if SHIFT_SOLO.swap(false, Ordering::SeqCst) {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let down_time = SHIFT_DOWN_TIME.load(Ordering::SeqCst);
-                    let elapsed = now.saturating_sub(down_time);
-                    if elapsed < 500 && crate::system::input_detector::WAS_CHINESE_LAYOUT.load(Ordering::Relaxed) {
-                        crate::system::input_detector::toggle_pime_mode();
-                        std::thread::spawn(|| {
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                            crate::system::input_detector::update_osk_state();
-                        });
+            } else if is_up {
+                if vk == 0x10 || vk == 0xA0 || vk == 0xA1 {
+                    if SHIFT_SOLO.swap(false, Ordering::SeqCst) {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let down_time = SHIFT_DOWN_TIME.load(Ordering::SeqCst);
+                        let elapsed = now.saturating_sub(down_time);
+                        if elapsed < 500 && crate::system::input_detector::WAS_CHINESE_LAYOUT.load(Ordering::Relaxed) {
+                            crate::system::input_detector::toggle_pime_mode();
+                            std::thread::spawn(|| {
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                crate::system::input_detector::update_osk_state();
+                            });
+                        }
                     }
                 }
             }

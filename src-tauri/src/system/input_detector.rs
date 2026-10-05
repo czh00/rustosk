@@ -39,13 +39,17 @@ lazy_static! {
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 }
 
-pub fn toggle_pime_mode() {
-    PIME_ZH_MODE.fetch_xor(true, Ordering::SeqCst);
+#[tauri::command]
+pub fn toggle_pime_mode() -> bool {
+    let new_val = PIME_ZH_MODE.fetch_xor(true, Ordering::SeqCst) ^ true;
+    LAST_ZH_STATE.store(new_val, Ordering::Relaxed);
+    new_val
 }
 
-#[allow(dead_code)]
-pub fn set_pime_mode(val: bool) {
-    PIME_ZH_MODE.store(val, Ordering::SeqCst);
+#[tauri::command]
+pub fn set_pime_mode(is_zh: bool) {
+    PIME_ZH_MODE.store(is_zh, Ordering::SeqCst);
+    LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
 }
 
 // Get the class of a window
@@ -253,20 +257,17 @@ pub fn is_ime_active() -> bool {
                 Some(&mut res_conv),
             );
 
+            // 僅當輸入法明確支援 IMM32 且回報 res_open != 0 (IME 處於開啟狀態) 時才認定回應
             if ok_open.0 != 0 && res_open != 0 {
                 wm_control_responded = true;
                 let is_native = (res_conv as u32 & IME_CMODE_NATIVE.0) != 0;
                 if is_native {
                     is_chinese = true;
                     PIME_ZH_MODE.store(true, Ordering::Relaxed);
-                } else if res_conv != 0 {
+                } else if ok_conv.0 != 0 {
+                    is_chinese = false;
                     PIME_ZH_MODE.store(false, Ordering::Relaxed);
                 }
-            } else if ok_conv.0 != 0 && res_conv != 0 {
-                // res_open == 0 但 res_conv != 0，表示輸入法明確回報當前已關閉/英數模式 (如微軟新注音按 Shift)
-                wm_control_responded = true;
-                is_chinese = false;
-                PIME_ZH_MODE.store(false, Ordering::Relaxed);
             }
         }
 
@@ -279,13 +280,15 @@ pub fn is_ime_active() -> bool {
                 let mut conv = IME_CONVERSION_MODE(0);
                 let mut sentence = IME_SENTENCE_MODE(0);
                 if ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool() {
-                    wm_control_responded = true;
-                    let is_native = (conv.0 & IME_CMODE_NATIVE.0) != 0;
-                    if is_open && is_native {
-                        is_chinese = true;
-                        PIME_ZH_MODE.store(true, Ordering::Relaxed);
-                    } else {
-                        PIME_ZH_MODE.store(false, Ordering::Relaxed);
+                    if is_open {
+                        wm_control_responded = true;
+                        let is_native = (conv.0 & IME_CMODE_NATIVE.0) != 0;
+                        if is_native {
+                            is_chinese = true;
+                            PIME_ZH_MODE.store(true, Ordering::Relaxed);
+                        } else {
+                            PIME_ZH_MODE.store(false, Ordering::Relaxed);
+                        }
                     }
                 }
                 let _ = ImmReleaseContext(target_hwnd, himc);

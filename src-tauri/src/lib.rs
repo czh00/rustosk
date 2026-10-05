@@ -44,7 +44,9 @@ pub fn run() {
             system::window_manager::execute_app,
             system::window_manager::set_recording_mode,
             system::window_manager::stop_macro,
-            system::window_manager::is_avoiding
+            system::window_manager::is_avoiding,
+            system::input_detector::set_pime_mode,
+            system::input_detector::toggle_pime_mode
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
