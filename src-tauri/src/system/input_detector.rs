@@ -26,15 +26,16 @@ use windows::Win32::UI::Input::Ime::{
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW, GetWindowThreadProcessId,
-    SendMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GUITHREADINFO, GUI_CARETBLINKING,
-    WINEVENT_OUTOFCONTEXT, WM_IME_CONTROL,
+    SendMessageTimeoutW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GUITHREADINFO, GUI_CARETBLINKING,
+    SMTO_ABORTIFHUNG, SMTO_NORMAL, WINEVENT_OUTOFCONTEXT, WM_IME_CONTROL,
 };
 lazy_static! {
     static ref GLOBAL_WINDOW: Mutex<Option<WebviewWindow>> = Mutex::new(None);
+    pub static ref OSK_HWND: AtomicUsize = AtomicUsize::new(0);
     static ref UPDATE_COUNTER: AtomicUsize = AtomicUsize::new(0);
     static ref DIAG_ID: AtomicUsize = AtomicUsize::new(0);
     pub static ref PIME_ZH_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-    static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    pub static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 }
 
@@ -173,14 +174,9 @@ pub fn is_ime_active() -> bool {
         }
 
         // 判斷前景視窗是否為 OSK 本身，若為 OSK 則維持最後偵測到的中文狀態，避免在點擊 OSK 時跳回英文
-        if let Ok(guard) = GLOBAL_WINDOW.lock() {
-            if let Some(window) = guard.as_ref() {
-                if let Ok(our_hwnd) = window.hwnd() {
-                    if (hwnd_fore.0 as usize) == (our_hwnd.0 as usize) {
-                        return LAST_ZH_STATE.load(Ordering::Relaxed);
-                    }
-                }
-            }
+        let osk_hwnd = OSK_HWND.load(Ordering::Relaxed);
+        if osk_hwnd != 0 && (hwnd_fore.0 as usize) == osk_hwnd {
+            return LAST_ZH_STATE.load(Ordering::Relaxed);
         }
 
         // 若前景視窗為輸入法候選字視窗 (包含 PIME 的 LibImeWindow)，必定處於中文選字狀態
@@ -232,31 +228,41 @@ pub fn is_ime_active() -> bool {
         let mut wm_control_responded = false;
 
         // 2. 優先嘗試使用 WM_IME_CONTROL 獲取狀態 (支援微軟新注音、Weasel 小狼毫等支援 IMM32 的輸入法)
+        // 使用 SendMessageTimeoutW 搭配短超時 (30ms)，避免跨行程傳送訊息至外部程式 (如 LINE) 時造成雙向死結或卡死
         if !ime_wnd.0.is_null() {
-            let res_open = SendMessageW(
+            let mut res_open: usize = 0;
+            let mut res_conv: usize = 0;
+
+            let ok_open = SendMessageTimeoutW(
                 ime_wnd,
                 WM_IME_CONTROL,
                 WPARAM(IMC_GETOPENSTATUS),
                 LPARAM(0),
+                SMTO_ABORTIFHUNG | SMTO_NORMAL,
+                30,
+                Some(&mut res_open),
             );
-            let res_conv = SendMessageW(
+
+            let ok_conv = SendMessageTimeoutW(
                 ime_wnd,
                 WM_IME_CONTROL,
                 WPARAM(IMC_GETCONVERSIONMODE),
                 LPARAM(0),
+                SMTO_ABORTIFHUNG | SMTO_NORMAL,
+                30,
+                Some(&mut res_conv),
             );
 
-            // 若 IME 支援 WM_IME_CONTROL 並回傳有效狀態
-            if res_open.0 != 0 {
+            if ok_open.0 != 0 && res_open != 0 {
                 wm_control_responded = true;
-                let is_native = (res_conv.0 as u32 & IME_CMODE_NATIVE.0) != 0;
+                let is_native = (res_conv as u32 & IME_CMODE_NATIVE.0) != 0;
                 if is_native {
                     is_chinese = true;
                     PIME_ZH_MODE.store(true, Ordering::Relaxed);
-                } else if res_conv.0 != 0 {
+                } else if res_conv != 0 {
                     PIME_ZH_MODE.store(false, Ordering::Relaxed);
                 }
-            } else if res_conv.0 != 0 {
+            } else if ok_conv.0 != 0 && res_conv != 0 {
                 // res_open == 0 但 res_conv != 0，表示輸入法明確回報當前已關閉/英數模式 (如微軟新注音按 Shift)
                 wm_control_responded = true;
                 is_chinese = false;
@@ -264,8 +270,9 @@ pub fn is_ime_active() -> bool {
             }
         }
 
-        // 3. 標準 IMM API 備援偵測 (針對同執行緒或傳統 IMM32 應用程式)
-        if !wm_control_responded && !target_hwnd.0.is_null() {
+        // 3. 標準 IMM API 備援偵測 (只針對同行程，避免跨行程觸碰外部程式 IMC)
+        let current_pid = std::process::id();
+        if !wm_control_responded && !target_hwnd.0.is_null() && pid == current_pid {
             let himc = ImmGetContext(target_hwnd);
             if !himc.0.is_null() {
                 let is_open = ImmGetOpenStatus(himc).as_bool();
@@ -408,24 +415,12 @@ pub fn update_osk_state() {
     let is_pinned = IS_PINNED.load(Ordering::Relaxed);
     let is_manually_hidden = IS_MANUALLY_HIDDEN.load(Ordering::Relaxed);
 
-    // 判斷前景視窗是否為 OSK 本身，避免在使用鍵盤時被隱藏
-    let is_osk_focused = if let Ok(guard) = GLOBAL_WINDOW.lock() {
-        if let Some(window) = guard.as_ref() {
-            if let Ok(our_hwnd) = window.hwnd() {
-                let fg_hwnd = unsafe { GetForegroundWindow() };
-                (fg_hwnd.0 as usize) == (our_hwnd.0 as usize)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    } else {
-        false
-    };
+    // 判斷前景視窗是否為 OSK 本身，避免在使用鍵盤時被隱藏 (免鎖原子讀取)
+    let fg_hwnd = unsafe { GetForegroundWindow() };
+    let osk_hwnd = OSK_HWND.load(Ordering::Relaxed);
+    let is_osk_focused = osk_hwnd != 0 && (fg_hwnd.0 as usize) == osk_hwnd;
 
     // 偵測輸入法系統視窗，避免在選字時頻繁觸發置頂邏輯導致閃爍
-    let fg_hwnd = unsafe { GetForegroundWindow() };
     let fg_class = get_window_class(fg_hwnd);
     let proc_name = get_process_name(fg_hwnd).to_lowercase();
     let is_search_or_start = crate::system::window_manager::is_search_or_start_window(fg_hwnd);
@@ -435,12 +430,14 @@ pub fn update_osk_state() {
         || (fg_class == "Windows.UI.Core.CoreWindow" && proc_name == "textinputhost.exe"))
         && !is_search_or_start;
 
+    // 在進入互斥鎖前計算所有狀態，避免在持鎖期間產生任何鎖競態或二次呼叫死結
+    let (_is_caps, _is_num) = crate::system::keyboard_simulator::get_locks();
+    let is_zh = is_ime_active();
+    let clipboard = get_clipboard_text();
+
     if let Ok(guard) = GLOBAL_WINDOW.lock() {
         if let Some(window) = guard.as_ref() {
             let _diag_id = DIAG_ID.fetch_add(1, Ordering::Relaxed);
-            let (_is_caps, _is_num) = crate::system::keyboard_simulator::get_locks();
-            let is_zh = is_ime_active();
-            let clipboard = get_clipboard_text();
 
             // 構造 UI 狀態更新酬載
             let payload = serde_json::json!({
@@ -473,6 +470,9 @@ pub fn update_osk_state() {
 }
 
 pub fn start_detector(window: WebviewWindow) {
+    if let Ok(hwnd) = window.hwnd() {
+        OSK_HWND.store(hwnd.0 as usize, Ordering::Relaxed);
+    }
     if let Ok(mut guard) = GLOBAL_WINDOW.lock() {
         *guard = Some(window.clone());
     }

@@ -123,7 +123,7 @@ unsafe extern "system" fn keyboard_hook_proc(
                         .as_millis() as u64;
                     let down_time = SHIFT_DOWN_TIME.load(Ordering::SeqCst);
                     let elapsed = now.saturating_sub(down_time);
-                    if elapsed < 500 {
+                    if elapsed < 500 && crate::system::input_detector::WAS_CHINESE_LAYOUT.load(Ordering::Relaxed) {
                         crate::system::input_detector::toggle_pime_mode();
                         std::thread::spawn(|| {
                             std::thread::sleep(std::time::Duration::from_millis(50));
