@@ -176,13 +176,13 @@ pub fn check_caret() -> bool {
 
 #[allow(dead_code)]
 pub fn is_ime_active() -> bool {
-    is_ime_active_details().0
+    is_ime_active_details(false).0
 }
 
 /// 偵測輸入法中英狀態，回傳 (is_zh, is_reliable)
 /// is_reliable: 是否有明確的系統訊號 (例如候選字窗、Weasel WM_IME_CONTROL、微軟新注音 IMC 開啟狀態)
 /// 若為 false (如 PIME 新酷音純 TSF 無法被外部偵測)，則遵循使用者在 OSK 上的「ㄅ/En」手動切換狀態
-pub fn is_ime_active_details() -> (bool, bool) {
+pub fn is_ime_active_details(is_app_switch: bool) -> (bool, bool) {
     const IMC_GETCONVERSIONMODE: usize = 0x0001;
     const IMC_GETOPENSTATUS: usize = 0x0005;
 
@@ -245,6 +245,7 @@ pub fn is_ime_active_details() -> (bool, bool) {
         // 若當前鍵盤佈局明確不是中文語系 (例如英文 0x0409)，直接判定為英文模式 (明確可靠)
         if (hkl.0 as usize) != 0 && !is_chinese_layout {
             WAS_CHINESE_LAYOUT.store(false, Ordering::Relaxed);
+            PIME_ZH_MODE.store(false, Ordering::Relaxed);
             LAST_ZH_STATE.store(false, Ordering::Relaxed);
             return (false, true);
         }
@@ -291,30 +292,46 @@ pub fn is_ime_active_details() -> (bool, bool) {
         }
 
         // 3. 標準 IMM32 API 偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
-        let check_hwnd = if !target_hwnd.0.is_null() { target_hwnd } else { ime_wnd };
-        if !check_hwnd.0.is_null() {
-            let himc = ImmGetContext(check_hwnd);
-            if !himc.0.is_null() {
-                let is_open = ImmGetOpenStatus(himc).as_bool();
-                let mut conv = IME_CONVERSION_MODE(0);
-                let mut sentence = IME_SENTENCE_MODE(0);
-                let ok_conv = ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool();
-                let _ = ImmReleaseContext(check_hwnd, himc);
+        let mut got_imc_state: Option<(bool, bool)> = None;
+        for &h in &[target_hwnd, hwnd_fore] {
+            if !h.0.is_null() {
+                let himc = ImmGetContext(h);
+                if !himc.0.is_null() {
+                    let is_open = ImmGetOpenStatus(himc).as_bool();
+                    let mut conv = IME_CONVERSION_MODE(0);
+                    let mut sentence = IME_SENTENCE_MODE(0);
+                    let ok_conv = ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool();
+                    let _ = ImmReleaseContext(h, himc);
 
-                if ok_conv && (conv.0 & IME_CMODE_NATIVE.0) != 0 && is_open {
-                    PIME_ZH_MODE.store(true, Ordering::Relaxed);
-                    LAST_ZH_STATE.store(true, Ordering::Relaxed);
-                    return (true, true);
+                    if ok_conv && (conv.0 & IME_CMODE_NATIVE.0) != 0 {
+                        if is_open {
+                            got_imc_state = Some((true, true));
+                        } else {
+                            got_imc_state = Some((false, true));
+                        }
+                        break;
+                    }
                 }
             }
         }
 
-        // 4. 若既非 Weasel 也非微軟新注音中文模式，且為中文語系 (如 PIME 新酷音等純 TSF 輸入法)
-        // 此時無法透過 Win32 API 穩定偵測中英狀態，標記為 is_reliable = false！
-        // 遵循使用者在 OSK 點擊「ㄅ/En」或實體 Shift 的手動模式，不進行強制覆蓋
-        let is_zh = PIME_ZH_MODE.load(Ordering::Relaxed);
-        LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
-        (is_zh, false)
+        if let Some((is_zh, is_reliable)) = got_imc_state {
+            PIME_ZH_MODE.store(is_zh, Ordering::Relaxed);
+            LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
+            return (is_zh, is_reliable);
+        }
+
+        // 4. 若既非 Weasel 也非微軟新注音，且為中文語系 (如 PIME 新酷音等純 TSF 輸入法)
+        if is_app_switch {
+            // 切換到新程式視窗時，中文鍵盤下的 PIME 預設為中文模式 (注音)
+            PIME_ZH_MODE.store(true, Ordering::Relaxed);
+            LAST_ZH_STATE.store(true, Ordering::Relaxed);
+            (true, true)
+        } else {
+            let is_zh = PIME_ZH_MODE.load(Ordering::Relaxed);
+            LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
+            (is_zh, false)
+        }
     }
 }
 
@@ -359,12 +376,16 @@ unsafe extern "system" fn win_event_callback(
     _dw_event_thread: u32,
     _dwms_event_time: u32,
 ) {
-    if event_type == EVENT_SYSTEM_FOREGROUND || event_type == EVENT_OBJECT_FOCUS {
+    if event_type == EVENT_SYSTEM_FOREGROUND {
+        // 前景視窗切換為最高優先順序事件，保證執行，不被 counter 防抖吞掉
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(20));
+            update_osk_state();
+        });
+    } else if event_type == EVENT_OBJECT_FOCUS {
         let count = UPDATE_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let delay_ms = if event_type == EVENT_SYSTEM_FOREGROUND { 30 } else { 80 };
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(delay_ms));
-            // 只執行最後一次觸發
+            std::thread::sleep(Duration::from_millis(60));
             if UPDATE_COUNTER.load(Ordering::SeqCst) == count + 1 {
                 update_osk_state();
             }
@@ -463,7 +484,7 @@ pub fn update_osk_state() {
 
     // 在進入互斥鎖前計算所有狀態，避免在持鎖期間產生任何鎖競態或二次呼叫死結
     let (_is_caps, _is_num) = crate::system::keyboard_simulator::get_locks();
-    let (is_zh, is_reliable) = is_ime_active_details();
+    let (is_zh, is_reliable) = is_ime_active_details(is_app_switch);
     let clipboard = get_clipboard_text();
 
     if let Ok(guard) = GLOBAL_WINDOW.lock() {
