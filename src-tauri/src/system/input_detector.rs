@@ -34,16 +34,66 @@ lazy_static! {
     pub static ref OSK_HWND: AtomicUsize = AtomicUsize::new(0);
     static ref UPDATE_COUNTER: AtomicUsize = AtomicUsize::new(0);
     static ref DIAG_ID: AtomicUsize = AtomicUsize::new(0);
-    pub static ref PIME_ZH_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
     pub static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    static ref LAST_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     static ref LAST_FOREGROUND_HWND: AtomicUsize = AtomicUsize::new(0);
+    static ref WINDOW_IME_MAP: Mutex<std::collections::HashMap<usize, bool>> = Mutex::new(std::collections::HashMap::new());
+}
+
+pub fn get_effective_target_hwnd() -> usize {
+    let fg_hwnd = unsafe { GetForegroundWindow() };
+    let fg_val = fg_hwnd.0 as usize;
+    let osk_hwnd = OSK_HWND.load(Ordering::Relaxed);
+    if osk_hwnd != 0 && fg_val == osk_hwnd {
+        LAST_FOREGROUND_HWND.load(Ordering::Relaxed)
+    } else if fg_val != 0 {
+        fg_val
+    } else {
+        LAST_FOREGROUND_HWND.load(Ordering::Relaxed)
+    }
+}
+
+pub fn set_window_ime(hwnd: usize, is_zh: bool) {
+    if hwnd == 0 {
+        return;
+    }
+    if let Ok(mut map) = WINDOW_IME_MAP.lock() {
+        map.insert(hwnd, is_zh);
+        if map.len() > 64 {
+            map.retain(|&h, _| unsafe {
+                windows::Win32::UI::WindowsAndMessaging::IsWindow(HWND(h as _)).as_bool()
+            });
+        }
+    }
+}
+
+pub fn get_or_default_window_ime(hwnd: usize, default_zh: bool) -> bool {
+    if hwnd == 0 {
+        return default_zh;
+    }
+    if let Ok(mut map) = WINDOW_IME_MAP.lock() {
+        if let Some(&val) = map.get(&hwnd) {
+            val
+        } else {
+            map.insert(hwnd, default_zh);
+            default_zh
+        }
+    } else {
+        default_zh
+    }
+}
+
+pub fn toggle_window_ime(hwnd: usize) -> bool {
+    let current = get_or_default_window_ime(hwnd, true);
+    let new_val = !current;
+    set_window_ime(hwnd, new_val);
+    new_val
 }
 
 #[tauri::command]
 pub fn toggle_pime_mode() -> bool {
-    let new_val = PIME_ZH_MODE.fetch_xor(true, Ordering::SeqCst) ^ true;
+    let target = get_effective_target_hwnd();
+    let new_val = toggle_window_ime(target);
     LAST_ZH_STATE.store(new_val, Ordering::Relaxed);
     if let Ok(guard) = GLOBAL_WINDOW.lock() {
         if let Some(window) = guard.as_ref() {
@@ -55,7 +105,8 @@ pub fn toggle_pime_mode() -> bool {
 
 #[tauri::command]
 pub fn set_pime_mode(is_zh: bool) {
-    PIME_ZH_MODE.store(is_zh, Ordering::SeqCst);
+    let target = get_effective_target_hwnd();
+    set_window_ime(target, is_zh);
     LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
 }
 
@@ -186,7 +237,7 @@ pub fn is_ime_active() -> bool {
 /// 4. 若皆無 IMM32 回應，則判定為純 TSF 輸入法 (如 PIME 新酷音)：
 ///    - 若為程式視窗切換 (is_app_switch)，新視窗在繁中佈局預設為中文模式
 ///    - 若為同視窗，依循使用者手動切換狀態 (PIME_ZH_MODE)，避免背景輪詢誤判覆蓋
-pub fn is_ime_active_details(is_app_switch: bool) -> bool {
+pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
     const IMC_GETCONVERSIONMODE: usize = 0x0001;
     const IMC_GETOPENSTATUS: usize = 0x0005;
 
@@ -202,10 +253,12 @@ pub fn is_ime_active_details(is_app_switch: bool) -> bool {
             return LAST_ZH_STATE.load(Ordering::Relaxed);
         }
 
+        let target_val = get_effective_target_hwnd();
+
         // 若前景視窗為輸入法候選字視窗 (包含 PIME 的 LibImeWindow、Weasel 小狼毫、微軟新注音 Candidate)，必定處於中文選字狀態
         let fg_class = get_window_class(hwnd_fore);
         if fg_class.contains("IME") || fg_class.contains("Candidate") || fg_class == "LibImeWindow" || fg_class.contains("Weasel") {
-            PIME_ZH_MODE.store(true, Ordering::Relaxed);
+            set_window_ime(target_val, true);
             LAST_ZH_STATE.store(true, Ordering::Relaxed);
             return true;
         }
@@ -216,7 +269,7 @@ pub fn is_ime_active_details(is_app_switch: bool) -> bool {
             windows::core::PCWSTR::null(),
         ) {
             if !libime_hwnd.0.is_null() && windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(libime_hwnd).as_bool() {
-                PIME_ZH_MODE.store(true, Ordering::Relaxed);
+                set_window_ime(target_val, true);
                 LAST_ZH_STATE.store(true, Ordering::Relaxed);
                 return true;
             }
@@ -249,15 +302,12 @@ pub fn is_ime_active_details(is_app_switch: bool) -> bool {
         // 若當前鍵盤佈局明確不是中文語系 (例如英文 0x0409)，直接判定為英文模式
         if (hkl.0 as usize) != 0 && !is_chinese_layout {
             WAS_CHINESE_LAYOUT.store(false, Ordering::Relaxed);
-            PIME_ZH_MODE.store(false, Ordering::Relaxed);
+            set_window_ime(target_val, false);
             LAST_ZH_STATE.store(false, Ordering::Relaxed);
             return false;
         }
 
-        // 若剛剛從非中文語系切換回中文語系，自動將 PIME 狀態重設為中文 (預設中文模式)
-        if !WAS_CHINESE_LAYOUT.swap(true, Ordering::Relaxed) {
-            PIME_ZH_MODE.store(true, Ordering::Relaxed);
-        }
+        WAS_CHINESE_LAYOUT.store(true, Ordering::Relaxed);
 
         let ime_wnd = ImmGetDefaultIMEWnd(target_hwnd);
 
@@ -291,7 +341,7 @@ pub fn is_ime_active_details(is_app_switch: bool) -> bool {
             // 避免將不實作 IMM32 的純 TSF 輸入法 (如 PIME 回傳 0) 誤判為關閉/英文
             if ok_open.0 != 0 && ok_conv.0 != 0 && (res_conv as u32 & IME_CMODE_NATIVE.0) != 0 {
                 let is_open = res_open != 0;
-                PIME_ZH_MODE.store(is_open, Ordering::Relaxed);
+                set_window_ime(target_val, is_open);
                 LAST_ZH_STATE.store(is_open, Ordering::Relaxed);
                 return is_open;
             }
@@ -320,20 +370,14 @@ pub fn is_ime_active_details(is_app_switch: bool) -> bool {
         }
 
         if imm_responded {
-            PIME_ZH_MODE.store(imm_zh, Ordering::Relaxed);
+            set_window_ime(target_val, imm_zh);
             LAST_ZH_STATE.store(imm_zh, Ordering::Relaxed);
             return imm_zh;
         }
 
         // 4. 若既非 Weasel 也非微軟新注音 (如 PIME 新酷音等純 TSF 輸入法)
-        if is_app_switch {
-            // 切換到新程式視窗時，中文鍵盤下的 PIME 預設為中文模式 (注音)
-            PIME_ZH_MODE.store(true, Ordering::Relaxed);
-            LAST_ZH_STATE.store(true, Ordering::Relaxed);
-            return true;
-        }
-
-        let is_zh = PIME_ZH_MODE.load(Ordering::Relaxed);
+        // 讀取該目標視窗各自獨立記憶的輸入法狀態；初次開啟之視窗預設為中文模式
+        let is_zh = get_or_default_window_ime(target_val, true);
         LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
         is_zh
     }
@@ -465,23 +509,15 @@ pub fn update_osk_state() {
         || (fg_class == "Windows.UI.Core.CoreWindow" && proc_name == "textinputhost.exe"))
         && !is_search_or_start;
 
-    // 偵測前景視窗切換 (程式變換焦點)
-    let mut is_app_switch = false;
+    // 記錄當前真正的應用程式視窗代碼
     if !is_osk_focused && !fg_hwnd.0.is_null() && !is_ime_candidate {
         let fg_val = fg_hwnd.0 as usize;
-        let prev_hwnd = LAST_FOREGROUND_HWND.swap(fg_val, Ordering::Relaxed);
-        if prev_hwnd != 0 && prev_hwnd != fg_val {
-            is_app_switch = true;
-            // 當切換到新視窗時，若為中文鍵盤佈局，自動將 PIME 預設狀態重設為中文 (PIME 啟動在新視窗預設為中文)
-            if WAS_CHINESE_LAYOUT.load(Ordering::Relaxed) {
-                PIME_ZH_MODE.store(true, Ordering::Relaxed);
-            }
-        }
+        LAST_FOREGROUND_HWND.store(fg_val, Ordering::Relaxed);
     }
 
     // 在進入互斥鎖前計算所有狀態，避免在持鎖期間產生任何鎖競態或二次呼叫死結
     let (_is_caps, _is_num) = crate::system::keyboard_simulator::get_locks();
-    let is_zh = is_ime_active_details(is_app_switch);
+    let is_zh = is_ime_active_details(false);
     let clipboard = get_clipboard_text();
 
     if let Ok(guard) = GLOBAL_WINDOW.lock() {
