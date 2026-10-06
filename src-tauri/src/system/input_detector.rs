@@ -35,7 +35,7 @@ lazy_static! {
     static ref UPDATE_COUNTER: AtomicUsize = AtomicUsize::new(0);
     static ref DIAG_ID: AtomicUsize = AtomicUsize::new(0);
     pub static ref PIME_ZH_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-    pub static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    pub static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static ref LAST_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 }
@@ -266,7 +266,19 @@ pub fn is_ime_active() -> bool {
             }
         }
 
-        // 3. 標準 IMM32 API 偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
+        // 3. 檢查是否有 PIME 候選字視窗 (LibImeWindow) 正處於可見狀態
+        if let Ok(libime_hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            windows::core::w!("LibImeWindow"),
+            windows::core::PCWSTR::null(),
+        ) {
+            if !libime_hwnd.0.is_null() && windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(libime_hwnd).as_bool() {
+                PIME_ZH_MODE.store(true, Ordering::Relaxed);
+                LAST_ZH_STATE.store(true, Ordering::Relaxed);
+                return true;
+            }
+        }
+
+        // 4. 標準 IMM32 API 偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
         let context_hwnd = if !ime_wnd.0.is_null() {
             ime_wnd
         } else {
@@ -282,18 +294,17 @@ pub fn is_ime_active() -> bool {
                 let ok_conv = ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool();
                 let _ = ImmReleaseContext(context_hwnd, himc);
 
-                if ok_conv && (conv.0 & IME_CMODE_NATIVE.0) != 0 {
-                    // 此為微軟新注音等支援 IMM32 原生轉換模式之輸入法
-                    // is_open 為 true 代表中文，false 代表按 Shift 切換成英文
-                    let is_zh = is_open;
-                    PIME_ZH_MODE.store(is_zh, Ordering::Relaxed);
-                    LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
-                    return is_zh;
+                if ok_conv && (conv.0 & IME_CMODE_NATIVE.0) != 0 && is_open {
+                    // 只有當微軟新注音等 IMM32 輸入法明確處於開啟 (中文) 狀態時才在此返回 true
+                    // 勿在 is_open == false 時返回 false，以免覆蓋純 TSF 輸入法 (如 PIME 新酷音，其 is_open 恆為 false)
+                    PIME_ZH_MODE.store(true, Ordering::Relaxed);
+                    LAST_ZH_STATE.store(true, Ordering::Relaxed);
+                    return true;
                 }
             }
         }
 
-        // 4. 若既非 Weasel 也非微軟新注音，且當前為中文語系 (0x0404)，則為純 TSF 輸入法 (如 PIME 新酷音)
+        // 5. 若既非 Weasel 也非微軟新注音，且當前為中文語系 (0x0404)，則為純 TSF 輸入法 (如 PIME 新酷音)
         // 採用追蹤的 PIME_ZH_MODE 狀態 (支援 Shift 單擊與 OSK「En / ㄅ」切換)
         let is_zh = PIME_ZH_MODE.load(Ordering::Relaxed);
         LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
