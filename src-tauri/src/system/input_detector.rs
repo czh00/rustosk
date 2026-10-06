@@ -44,6 +44,11 @@ lazy_static! {
 pub fn toggle_pime_mode() -> bool {
     let new_val = PIME_ZH_MODE.fetch_xor(true, Ordering::SeqCst) ^ true;
     LAST_ZH_STATE.store(new_val, Ordering::Relaxed);
+    if let Ok(guard) = GLOBAL_WINDOW.lock() {
+        if let Some(window) = guard.as_ref() {
+            let _ = window.emit("manual_ime_toggled", new_val);
+        }
+    }
     new_val
 }
 
@@ -168,20 +173,28 @@ pub fn check_caret() -> bool {
     false
 }
 
+#[allow(dead_code)]
 pub fn is_ime_active() -> bool {
+    is_ime_active_details().0
+}
+
+/// 偵測輸入法中英狀態，回傳 (is_zh, is_reliable)
+/// is_reliable: 是否有明確的系統訊號 (例如候選字窗、Weasel WM_IME_CONTROL、微軟新注音 IMC 開啟狀態)
+/// 若為 false (如 PIME 新酷音純 TSF 無法被外部偵測)，則遵循使用者在 OSK 上的「ㄅ/En」手動切換狀態
+pub fn is_ime_active_details() -> (bool, bool) {
     const IMC_GETCONVERSIONMODE: usize = 0x0001;
     const IMC_GETOPENSTATUS: usize = 0x0005;
 
     unsafe {
         let hwnd_fore = GetForegroundWindow();
         if hwnd_fore.0.is_null() {
-            return false;
+            return (LAST_ZH_STATE.load(Ordering::Relaxed), false);
         }
 
-        // 判斷前景視窗是否為 OSK 本身，若為 OSK 則維持最後偵測到的中文狀態，避免在點擊 OSK 時跳回英文
+        // 判斷前景視窗是否為 OSK 本身，若為 OSK 則維持最後偵測到的狀態，不視為可靠的目標程式偵測
         let osk_hwnd = OSK_HWND.load(Ordering::Relaxed);
         if osk_hwnd != 0 && (hwnd_fore.0 as usize) == osk_hwnd {
-            return LAST_ZH_STATE.load(Ordering::Relaxed);
+            return (LAST_ZH_STATE.load(Ordering::Relaxed), false);
         }
 
         // 若前景視窗為輸入法候選字視窗 (包含 PIME 的 LibImeWindow、Weasel 小狼毫、微軟新注音 Candidate)，必定處於中文選字狀態
@@ -189,7 +202,19 @@ pub fn is_ime_active() -> bool {
         if fg_class.contains("IME") || fg_class.contains("Candidate") || fg_class == "LibImeWindow" || fg_class.contains("Weasel") {
             PIME_ZH_MODE.store(true, Ordering::Relaxed);
             LAST_ZH_STATE.store(true, Ordering::Relaxed);
-            return true;
+            return (true, true);
+        }
+
+        // 檢查是否有 PIME 候選字視窗 (LibImeWindow) 正處於可見狀態
+        if let Ok(libime_hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            windows::core::w!("LibImeWindow"),
+            windows::core::PCWSTR::null(),
+        ) {
+            if !libime_hwnd.0.is_null() && windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(libime_hwnd).as_bool() {
+                PIME_ZH_MODE.store(true, Ordering::Relaxed);
+                LAST_ZH_STATE.store(true, Ordering::Relaxed);
+                return (true, true);
+            }
         }
 
         let mut pid = 0;
@@ -216,17 +241,14 @@ pub fn is_ime_active() -> bool {
         let primary_lang = lang_id & 0x03FF;
         let is_chinese_layout = primary_lang == 0x0004;
 
-        // 若當前鍵盤佈局明確不是中文語系 (例如英文 0x0409)，直接判定為英文模式
+        // 若當前鍵盤佈局明確不是中文語系 (例如英文 0x0409)，直接判定為英文模式 (明確可靠)
         if (hkl.0 as usize) != 0 && !is_chinese_layout {
             WAS_CHINESE_LAYOUT.store(false, Ordering::Relaxed);
             LAST_ZH_STATE.store(false, Ordering::Relaxed);
-            return false;
+            return (false, true);
         }
 
-        // 若剛剛從非中文語系切換回中文語系，自動將 PIME 狀態重設為中文 (PIME 啟動預設為中文模式)
-        if !WAS_CHINESE_LAYOUT.swap(true, Ordering::Relaxed) {
-            PIME_ZH_MODE.store(true, Ordering::Relaxed);
-        }
+        WAS_CHINESE_LAYOUT.store(true, Ordering::Relaxed);
 
         let ime_wnd = ImmGetDefaultIMEWnd(target_hwnd);
 
@@ -262,53 +284,35 @@ pub fn is_ime_active() -> bool {
                 let is_zh = is_native;
                 PIME_ZH_MODE.store(is_zh, Ordering::Relaxed);
                 LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
-                return is_zh;
+                return (is_zh, true);
             }
         }
 
-        // 3. 檢查是否有 PIME 候選字視窗 (LibImeWindow) 正處於可見狀態
-        if let Ok(libime_hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
-            windows::core::w!("LibImeWindow"),
-            windows::core::PCWSTR::null(),
-        ) {
-            if !libime_hwnd.0.is_null() && windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(libime_hwnd).as_bool() {
-                PIME_ZH_MODE.store(true, Ordering::Relaxed);
-                LAST_ZH_STATE.store(true, Ordering::Relaxed);
-                return true;
-            }
-        }
-
-        // 4. 標準 IMM32 API 偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
-        let context_hwnd = if !ime_wnd.0.is_null() {
-            ime_wnd
-        } else {
-            target_hwnd
-        };
-
-        if !context_hwnd.0.is_null() {
-            let himc = ImmGetContext(context_hwnd);
+        // 3. 標準 IMM32 API 偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
+        let check_hwnd = if !target_hwnd.0.is_null() { target_hwnd } else { ime_wnd };
+        if !check_hwnd.0.is_null() {
+            let himc = ImmGetContext(check_hwnd);
             if !himc.0.is_null() {
                 let is_open = ImmGetOpenStatus(himc).as_bool();
                 let mut conv = IME_CONVERSION_MODE(0);
                 let mut sentence = IME_SENTENCE_MODE(0);
                 let ok_conv = ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool();
-                let _ = ImmReleaseContext(context_hwnd, himc);
+                let _ = ImmReleaseContext(check_hwnd, himc);
 
                 if ok_conv && (conv.0 & IME_CMODE_NATIVE.0) != 0 && is_open {
-                    // 只有當微軟新注音等 IMM32 輸入法明確處於開啟 (中文) 狀態時才在此返回 true
-                    // 勿在 is_open == false 時返回 false，以免覆蓋純 TSF 輸入法 (如 PIME 新酷音，其 is_open 恆為 false)
                     PIME_ZH_MODE.store(true, Ordering::Relaxed);
                     LAST_ZH_STATE.store(true, Ordering::Relaxed);
-                    return true;
+                    return (true, true);
                 }
             }
         }
 
-        // 5. 若既非 Weasel 也非微軟新注音，且當前為中文語系 (0x0404)，則為純 TSF 輸入法 (如 PIME 新酷音)
-        // 採用追蹤的 PIME_ZH_MODE 狀態 (支援 Shift 單擊與 OSK「En / ㄅ」切換)
+        // 4. 若既非 Weasel 也非微軟新注音中文模式，且為中文語系 (如 PIME 新酷音等純 TSF 輸入法)
+        // 此時無法透過 Win32 API 穩定偵測中英狀態，標記為 is_reliable = false！
+        // 遵循使用者在 OSK 點擊「ㄅ/En」或實體 Shift 的手動模式，不進行強制覆蓋
         let is_zh = PIME_ZH_MODE.load(Ordering::Relaxed);
         LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
-        is_zh
+        (is_zh, false)
     }
 }
 
@@ -442,7 +446,7 @@ pub fn update_osk_state() {
 
     // 在進入互斥鎖前計算所有狀態，避免在持鎖期間產生任何鎖競態或二次呼叫死結
     let (_is_caps, _is_num) = crate::system::keyboard_simulator::get_locks();
-    let is_zh = is_ime_active();
+    let (is_zh, is_reliable) = is_ime_active_details();
     let clipboard = get_clipboard_text();
 
     if let Ok(guard) = GLOBAL_WINDOW.lock() {
@@ -453,6 +457,7 @@ pub fn update_osk_state() {
             let payload = serde_json::json!({
                 "app": app_name,
                 "is_zh": is_zh,
+                "is_reliable": is_reliable,
                 "diag": "", // 移除診斷資訊以保持發布版本精簡
                 "clipboard": clipboard
             })
