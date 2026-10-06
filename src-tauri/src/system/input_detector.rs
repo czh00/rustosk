@@ -287,18 +287,13 @@ pub fn is_ime_active_details(is_app_switch: bool) -> bool {
                 Some(&mut res_conv),
             );
 
-            if ok_open.0 != 0 && ok_conv.0 != 0 {
+            // 必須確認該輸入法真正支援 IMM32 原生轉換模式 (IME_CMODE_NATIVE)
+            // 避免將不實作 IMM32 的純 TSF 輸入法 (如 PIME 回傳 0) 誤判為關閉/英文
+            if ok_open.0 != 0 && ok_conv.0 != 0 && (res_conv as u32 & IME_CMODE_NATIVE.0) != 0 {
                 let is_open = res_open != 0;
-                let is_native = (res_conv as u32 & IME_CMODE_NATIVE.0) != 0;
-                if is_open && is_native {
-                    PIME_ZH_MODE.store(true, Ordering::Relaxed);
-                    LAST_ZH_STATE.store(true, Ordering::Relaxed);
-                    return true;
-                } else if !is_open || (res_conv != 0 && !is_native) {
-                    PIME_ZH_MODE.store(false, Ordering::Relaxed);
-                    LAST_ZH_STATE.store(false, Ordering::Relaxed);
-                    return false;
-                }
+                PIME_ZH_MODE.store(is_open, Ordering::Relaxed);
+                LAST_ZH_STATE.store(is_open, Ordering::Relaxed);
+                return is_open;
             }
         }
 
