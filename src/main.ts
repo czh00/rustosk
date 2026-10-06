@@ -20,7 +20,6 @@ let isEditMode = false;
 let isFirstBoot = false;
 let lastCapsStatus = false;
 let lastNumStatus = false;
-let lastManualToggleTime = 0;
 
 // 全域錄製狀態 (用於編輯器)
 let recordingTargetId: string | null = null;
@@ -1123,7 +1122,6 @@ function handleKeyPressDirect(key: KeyDefinition) {
     }
 
     if (key.code === 0x5D) {
-        lastManualToggleTime = Date.now();
         isZhuyinMode = !isZhuyinMode;
         updateKeyboardDynamicMod();
         renderKeys();
@@ -1895,7 +1893,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     listen('manual_ime_toggled', (e: any) => {
         isZhuyinMode = Boolean(e.payload);
-        lastManualToggleTime = Date.now();
         updateKeyboardDynamicMod();
         renderKeys();
     });
@@ -1905,12 +1902,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = JSON.parse(e.payload);
             const infoFocus = document.getElementById('info-focus');
             const infoClip = document.getElementById('info-clipboard');
+            const imeStr = data.is_zh ? '中文' : '英文';
 
             if (infoFocus) {
-                const modeStr = data.is_reliable
-                    ? (data.is_zh ? '中文' : '英文')
-                    : (isZhuyinMode ? '注音' : '英文');
-                infoFocus.textContent = `${data.app} (${modeStr})`;
+                infoFocus.textContent = `${data.app} (${imeStr})`;
             }
             if (infoClip) {
                 let clipText = data.clipboard || '';
@@ -1927,18 +1922,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 toolbarLeft.removeAttribute('data-tip-base');
             }
 
-            // 語系同步：
-            // 若為可靠偵測 (data.is_reliable === true)，且不在手動點擊切換的保護期內，自動同步版面
-            // 若認不到狀態 (如 PIME 新酷音純 TSF，data.is_reliable === false)，完全尊重使用者手動切換 (ㄅ/En 按鍵)，絕不擅自覆蓋為英文！
-            const now = Date.now();
-            const inProtectWindow = (now - lastManualToggleTime) < 1500;
-
-            if (data.is_reliable && !inProtectWindow) {
-                if (data.is_zh !== isZhuyinMode) {
-                    isZhuyinMode = data.is_zh;
-                    updateKeyboardDynamicMod(); // 同步容器 class (mod-zh) 以驅動角落高亮
-                    renderKeys();
-                }
+            // 語系同步：即時無延遲同步 isZhuyinMode 以驅動靜態/動態標籤高亮與按鍵板面
+            if (data.is_zh !== isZhuyinMode) {
+                isZhuyinMode = data.is_zh;
+                updateKeyboardDynamicMod(); // 同步容器 class (mod-zh) 以驅動角落高亮
+                renderKeys();
             }
         } catch (err) { }
     });
