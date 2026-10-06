@@ -100,7 +100,8 @@ unsafe extern "system" fn keyboard_hook_proc(
         let is_up = wp == WM_KEYUP || wp == WM_SYSKEYUP;
         let vk = kbd_struct.vkCode;
 
-        let is_injected = (kbd_struct.flags.0 & 0x01) != 0;
+        let flags = kbd_struct.flags.0;
+        let is_injected = (flags & 0x10) != 0 || (flags & 0x02) != 0;
 
         // 偵測實體鍵盤單擊 Shift 與切換輸入法組合鍵 (排除軟體模擬按鍵)
         if !is_injected {

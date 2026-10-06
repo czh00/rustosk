@@ -278,13 +278,14 @@ pub fn is_ime_active_details() -> (bool, bool) {
                 Some(&mut res_conv),
             );
 
-            // 若 WM_IME_CONTROL 明確回應開關狀態 (res_open != 0)，代表為 Weasel 小狼毫等 IMM32 活躍輸入法
+            // 若 WM_IME_CONTROL 明確回應為中文模式 (res_open != 0 && is_native)，代表為活躍之中文輸入法狀態
             if ok_open.0 != 0 && res_open != 0 && ok_conv.0 != 0 {
                 let is_native = (res_conv as u32 & IME_CMODE_NATIVE.0) != 0;
-                let is_zh = is_native;
-                PIME_ZH_MODE.store(is_zh, Ordering::Relaxed);
-                LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
-                return (is_zh, true);
+                if is_native {
+                    PIME_ZH_MODE.store(true, Ordering::Relaxed);
+                    LAST_ZH_STATE.store(true, Ordering::Relaxed);
+                    return (true, true);
+                }
             }
         }
 
