@@ -1902,10 +1902,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = JSON.parse(e.payload);
             const infoFocus = document.getElementById('info-focus');
             const infoClip = document.getElementById('info-clipboard');
-            const imeStr = data.is_zh ? '中文' : '英文';
-
             if (infoFocus) {
-                infoFocus.textContent = `${data.app} (${imeStr})`;
+                const modeStr = data.is_reliable
+                    ? (data.is_zh ? '中文' : '英文')
+                    : (isZhuyinMode ? '注音' : '英文');
+                infoFocus.textContent = `${data.app} (${modeStr})`;
             }
             if (infoClip) {
                 let clipText = data.clipboard || '';
@@ -1922,11 +1923,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 toolbarLeft.removeAttribute('data-tip-base');
             }
 
-            // 語系同步：即時無延遲同步 isZhuyinMode 以驅動靜態/動態標籤高亮與按鍵板面
-            if (data.is_zh !== isZhuyinMode) {
-                isZhuyinMode = data.is_zh;
-                updateKeyboardDynamicMod(); // 同步容器 class (mod-zh) 以驅動角落高亮
-                renderKeys();
+            // 語系同步：
+            // 1. 若為精準可靠偵測 (data.is_reliable === true，如微軟新注音/小狼毫)，0ms 即時同步版面！
+            // 2. 若為認不到狀態 (data.is_reliable === false，如 PIME 新酷音)，完全尊重使用者手動按鍵 (ㄅ/En)，絕不被背景定時器覆蓋！
+            if (data.is_reliable) {
+                if (data.is_zh !== isZhuyinMode) {
+                    isZhuyinMode = data.is_zh;
+                    updateKeyboardDynamicMod(); // 同步容器 class (mod-zh) 以驅動角落高亮
+                    renderKeys();
+                }
             }
         } catch (err) { }
     });
