@@ -38,6 +38,7 @@ lazy_static! {
     pub static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static ref LAST_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static ref LAST_FOREGROUND_HWND: AtomicUsize = AtomicUsize::new(0);
 }
 
 #[tauri::command]
@@ -360,8 +361,9 @@ unsafe extern "system" fn win_event_callback(
 ) {
     if event_type == EVENT_SYSTEM_FOREGROUND || event_type == EVENT_OBJECT_FOCUS {
         let count = UPDATE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let delay_ms = if event_type == EVENT_SYSTEM_FOREGROUND { 30 } else { 80 };
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150));
+            std::thread::sleep(Duration::from_millis(delay_ms));
             // 只執行最後一次觸發
             if UPDATE_COUNTER.load(Ordering::SeqCst) == count + 1 {
                 update_osk_state();
@@ -445,6 +447,20 @@ pub fn update_osk_state() {
         || (fg_class == "Windows.UI.Core.CoreWindow" && proc_name == "textinputhost.exe"))
         && !is_search_or_start;
 
+    // 偵測前景視窗切換 (程式變換焦點)
+    let mut is_app_switch = false;
+    if !is_osk_focused && !fg_hwnd.0.is_null() && !is_ime_candidate {
+        let fg_val = fg_hwnd.0 as usize;
+        let prev_hwnd = LAST_FOREGROUND_HWND.swap(fg_val, Ordering::Relaxed);
+        if prev_hwnd != 0 && prev_hwnd != fg_val {
+            is_app_switch = true;
+            // 當切換到新視窗時，若為中文鍵盤佈局，自動將 PIME 預設狀態重設為中文 (PIME 啟動在新視窗預設為中文)
+            if WAS_CHINESE_LAYOUT.load(Ordering::Relaxed) {
+                PIME_ZH_MODE.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
     // 在進入互斥鎖前計算所有狀態，避免在持鎖期間產生任何鎖競態或二次呼叫死結
     let (_is_caps, _is_num) = crate::system::keyboard_simulator::get_locks();
     let (is_zh, is_reliable) = is_ime_active_details();
@@ -459,6 +475,7 @@ pub fn update_osk_state() {
                 "app": app_name,
                 "is_zh": is_zh,
                 "is_reliable": is_reliable,
+                "is_app_switch": is_app_switch,
                 "diag": "", // 移除診斷資訊以保持發布版本精簡
                 "clipboard": clipboard
             })

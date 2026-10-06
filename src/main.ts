@@ -1897,11 +1897,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderKeys();
     });
 
+    let lastFocusedApp = '';
     listen('focus_changed', (e: any) => {
         try {
             const data = JSON.parse(e.payload);
             const infoFocus = document.getElementById('info-focus');
             const infoClip = document.getElementById('info-clipboard');
+
+            const isAppSwitch = Boolean(data.is_app_switch) || (data.app && data.app !== lastFocusedApp);
+            if (data.app) {
+                lastFocusedApp = data.app;
+            }
+
             if (infoFocus) {
                 const modeStr = data.is_reliable
                     ? (data.is_zh ? '中文' : '英文')
@@ -1924,9 +1931,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 語系同步：
-            // 1. 若為精準可靠偵測 (data.is_reliable === true，如微軟新注音/小狼毫)，0ms 即時同步版面！
-            // 2. 若為認不到狀態 (data.is_reliable === false，如 PIME 新酷音)，完全尊重使用者手動按鍵 (ㄅ/En)，絕不被背景定時器覆蓋！
-            if (data.is_reliable) {
+            // 1. 若發生程式變換焦點 (isAppSwitch === true)，立即無條件同步為目標程式的輸入法狀態！
+            // 2. 若為可靠偵測 (data.is_reliable === true，如微軟新注音/小狼毫)，0ms 即時同步版面！
+            // 3. 若為同一個程式內部且不可靠偵測 (PIME 在打字中)，尊重使用者手動按鍵 (ㄅ/En)，絕不被背景定時器覆蓋！
+            if (isAppSwitch || data.is_reliable) {
                 if (data.is_zh !== isZhuyinMode) {
                     isZhuyinMode = data.is_zh;
                     updateKeyboardDynamicMod(); // 同步容器 class (mod-zh) 以驅動角落高亮
