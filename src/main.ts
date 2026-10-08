@@ -1122,12 +1122,8 @@ function handleKeyPressDirect(key: KeyDefinition) {
     }
 
     if (key.code === 0x5D) {
-        isZhuyinMode = !isZhuyinMode;
-        updateKeyboardDynamicMod();
-        renderKeys();
-        invoke('set_pime_mode', { isZh: isZhuyinMode });
-        invoke('simulate_key', { vkCode: 0xA0, isKeyUp: false });
-        setTimeout(() => invoke('simulate_key', { vkCode: 0xA0, isKeyUp: true }), 50);
+        // 按 ㄅ/En 不需要前端自行翻轉版面，完全依賴偵測機制自然變換版面
+        invoke('toggle_ime_key');
         return;
     }
 

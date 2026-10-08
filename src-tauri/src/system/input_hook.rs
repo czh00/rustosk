@@ -155,9 +155,18 @@ unsafe extern "system" fn keyboard_hook_proc(
                         let down_time = SHIFT_DOWN_TIME.load(Ordering::SeqCst);
                         let elapsed = now.saturating_sub(down_time);
                         if elapsed < 500 && crate::system::input_detector::WAS_CHINESE_LAYOUT.load(Ordering::Relaxed) {
-                            crate::system::input_detector::toggle_pime_mode();
+                            let target = crate::system::input_detector::get_effective_target_hwnd();
+                            let is_tsf = unsafe {
+                                let mut pid = 0;
+                                let tid = windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(windows::Win32::Foundation::HWND(target as _), Some(&mut pid));
+                                let hkl = windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout(tid);
+                                (hkl.0 as usize >> 28) == 0xF
+                            };
+                            if is_tsf {
+                                crate::system::input_detector::toggle_window_ime(target);
+                            }
                             std::thread::spawn(|| {
-                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                std::thread::sleep(std::time::Duration::from_millis(60));
                                 crate::system::input_detector::update_osk_state();
                             });
                         }

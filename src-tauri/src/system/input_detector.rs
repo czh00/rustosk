@@ -32,12 +32,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 lazy_static! {
     static ref GLOBAL_WINDOW: Mutex<Option<WebviewWindow>> = Mutex::new(None);
     pub static ref OSK_HWND: AtomicUsize = AtomicUsize::new(0);
-    static ref UPDATE_COUNTER: AtomicUsize = AtomicUsize::new(0);
     static ref DIAG_ID: AtomicUsize = AtomicUsize::new(0);
     pub static ref WAS_CHINESE_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static ref LAST_FOREGROUND_HWND: AtomicUsize = AtomicUsize::new(0);
     static ref WINDOW_IME_MAP: Mutex<std::collections::HashMap<usize, bool>> = Mutex::new(std::collections::HashMap::new());
+    static ref EVENT_TRIGGER: (std::sync::mpsc::Sender<()>, Mutex<std::sync::mpsc::Receiver<()>>) = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (tx, Mutex::new(rx))
+    };
 }
 
 pub fn get_effective_target_hwnd() -> usize {
@@ -108,6 +111,28 @@ pub fn set_pime_mode(is_zh: bool) {
     let target = get_effective_target_hwnd();
     set_window_ime(target, is_zh);
     LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
+}
+
+#[tauri::command]
+pub fn toggle_ime_key() {
+    let target = get_effective_target_hwnd();
+    let is_tsf = unsafe {
+        let mut pid = 0;
+        let tid = GetWindowThreadProcessId(HWND(target as _), Some(&mut pid));
+        let hkl = GetKeyboardLayout(tid);
+        (hkl.0 as usize >> 28) == 0xF
+    };
+    if is_tsf {
+        toggle_window_ime(target);
+    }
+
+    crate::system::keyboard_simulator::simulate_key_native(0xA0, false);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        crate::system::keyboard_simulator::simulate_key_native(0xA0, true);
+        std::thread::sleep(Duration::from_millis(60));
+        update_osk_state();
+    });
 }
 
 // Get the class of a window
@@ -247,13 +272,12 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
             return LAST_ZH_STATE.load(Ordering::Relaxed);
         }
 
-        // 判斷前景視窗是否為 OSK 本身，若為 OSK 則維持最後偵測到的狀態
-        let osk_hwnd = OSK_HWND.load(Ordering::Relaxed);
-        if osk_hwnd != 0 && (hwnd_fore.0 as usize) == osk_hwnd {
+        // 取得有效目標視窗
+        let target_val = get_effective_target_hwnd();
+        if target_val == 0 {
             return LAST_ZH_STATE.load(Ordering::Relaxed);
         }
-
-        let target_val = get_effective_target_hwnd();
+        let target_top_hwnd = HWND(target_val as _);
 
         // 若前景視窗為輸入法候選字視窗 (包含 PIME 的 LibImeWindow、Weasel 小狼毫、微軟新注音 Candidate)，必定處於中文選字狀態
         let fg_class = get_window_class(hwnd_fore);
@@ -276,7 +300,7 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
         }
 
         let mut pid = 0;
-        let thread_id = GetWindowThreadProcessId(hwnd_fore, Some(&mut pid));
+        let thread_id = GetWindowThreadProcessId(target_top_hwnd, Some(&mut pid));
 
         let mut gui_info = GUITHREADINFO {
             cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
@@ -286,7 +310,7 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
         let target_hwnd = if GetGUIThreadInfo(thread_id, &mut gui_info).is_ok() && !gui_info.hwndFocus.0.is_null() {
             gui_info.hwndFocus
         } else {
-            hwnd_fore
+            target_top_hwnd
         };
 
         let mut target_pid = 0;
@@ -309,16 +333,24 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
 
         WAS_CHINESE_LAYOUT.store(true, Ordering::Relaxed);
 
-        let ime_wnd = ImmGetDefaultIMEWnd(target_hwnd);
+        let hkl_val = hkl.0 as usize;
+        let is_pure_tsf_tip = (hkl_val >> 28) == 0xF;
 
-        // 2. 優先嘗試使用 WM_IME_CONTROL 獲取狀態 (支援 Weasel 小狼毫等 IMM32 輸入法)
-        // 跨行程呼叫使用 30ms 超時防卡死
-        if !ime_wnd.0.is_null() {
+        let ime_wnd = ImmGetDefaultIMEWnd(target_hwnd);
+        let effective_ime_wnd = if !ime_wnd.0.is_null() {
+            ime_wnd
+        } else {
+            ImmGetDefaultIMEWnd(target_top_hwnd)
+        };
+
+        // 2. 對於非純 TSF TIP 輸入法 (例如 Weasel 小狼毫、微軟新注音等標準 IMM32/系統輸入法)
+        // 優先嘗試使用 WM_IME_CONTROL 獲取狀態 (跨行程呼叫使用 30ms 超時防卡死)
+        if !is_pure_tsf_tip && !effective_ime_wnd.0.is_null() {
             let mut res_open: usize = 0;
             let mut res_conv: usize = 0;
 
             let ok_open = SendMessageTimeoutW(
-                ime_wnd,
+                effective_ime_wnd,
                 WM_IME_CONTROL,
                 WPARAM(IMC_GETOPENSTATUS),
                 LPARAM(0),
@@ -328,7 +360,7 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
             );
 
             let ok_conv = SendMessageTimeoutW(
-                ime_wnd,
+                effective_ime_wnd,
                 WM_IME_CONTROL,
                 WPARAM(IMC_GETCONVERSIONMODE),
                 LPARAM(0),
@@ -337,45 +369,51 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
                 Some(&mut res_conv),
             );
 
-            // 必須確認該輸入法真正支援 IMM32 原生轉換模式 (IME_CMODE_NATIVE)
-            // 避免將不實作 IMM32 的純 TSF 輸入法 (如 PIME 回傳 0) 誤判為關閉/英文
-            if ok_open.0 != 0 && ok_conv.0 != 0 && (res_conv as u32 & IME_CMODE_NATIVE.0) != 0 {
+            if ok_open.0 != 0 {
                 let is_open = res_open != 0;
-                set_window_ime(target_val, is_open);
-                LAST_ZH_STATE.store(is_open, Ordering::Relaxed);
-                return is_open;
+                let is_native = (res_conv as u32 & IME_CMODE_NATIVE.0) != 0;
+                let is_zh = if ok_conv.0 != 0 {
+                    is_open && is_native
+                } else {
+                    is_open
+                };
+                set_window_ime(target_val, is_zh);
+                LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
+                return is_zh;
             }
         }
 
-        // 3. 標準 IMM32 API 偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
-        let mut imm_responded = false;
-        let mut imm_zh = false;
-        for &h in &[ime_wnd, target_hwnd, hwnd_fore] {
-            if !h.0.is_null() {
-                let himc = ImmGetContext(h);
-                if !himc.0.is_null() {
-                    let is_open = ImmGetOpenStatus(himc).as_bool();
-                    let mut conv = IME_CONVERSION_MODE(0);
-                    let mut sentence = IME_SENTENCE_MODE(0);
-                    let ok_conv = ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool();
-                    let _ = ImmReleaseContext(h, himc);
+        // 3. 標準 IMM32 API 備援偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
+        if !is_pure_tsf_tip {
+            let mut imm_responded = false;
+            let mut imm_zh = false;
+            for &h in &[effective_ime_wnd, target_hwnd, target_top_hwnd] {
+                if !h.0.is_null() {
+                    let himc = ImmGetContext(h);
+                    if !himc.0.is_null() {
+                        let is_open = ImmGetOpenStatus(himc).as_bool();
+                        let mut conv = IME_CONVERSION_MODE(0);
+                        let mut sentence = IME_SENTENCE_MODE(0);
+                        let ok_conv = ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool();
+                        let _ = ImmReleaseContext(h, himc);
 
-                    if ok_conv && (conv.0 & IME_CMODE_NATIVE.0) != 0 {
-                        imm_responded = true;
-                        imm_zh = is_open;
-                        break;
+                        if ok_conv {
+                            imm_responded = true;
+                            imm_zh = is_open && ((conv.0 & IME_CMODE_NATIVE.0) != 0);
+                            break;
+                        }
                     }
                 }
             }
+
+            if imm_responded {
+                set_window_ime(target_val, imm_zh);
+                LAST_ZH_STATE.store(imm_zh, Ordering::Relaxed);
+                return imm_zh;
+            }
         }
 
-        if imm_responded {
-            set_window_ime(target_val, imm_zh);
-            LAST_ZH_STATE.store(imm_zh, Ordering::Relaxed);
-            return imm_zh;
-        }
-
-        // 4. 若既非 Weasel 也非微軟新注音 (如 PIME 新酷音等純 TSF 輸入法)
+        // 4. 若為純 TSF 輸入法 (如 PIME 新酷音) 或無 IMM 回應：
         // 讀取該目標視窗各自獨立記憶的輸入法狀態；初次開啟之視窗預設為中文模式
         let is_zh = get_or_default_window_ime(target_val, true);
         LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
@@ -423,14 +461,7 @@ unsafe extern "system" fn win_event_callback(
     _dwms_event_time: u32,
 ) {
     if event_type == EVENT_SYSTEM_FOREGROUND || event_type == EVENT_OBJECT_FOCUS {
-        let count = UPDATE_COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            // 只執行最後一次觸發，確保焦點切換完成後即時更新狀態
-            if UPDATE_COUNTER.load(Ordering::SeqCst) == count + 1 {
-                update_osk_state();
-            }
-        });
+        let _ = EVENT_TRIGGER.0.send(());
     }
 }
 
@@ -498,10 +529,15 @@ pub fn update_osk_state() {
     let osk_hwnd = OSK_HWND.load(Ordering::Relaxed);
     let is_osk_focused = osk_hwnd != 0 && (fg_hwnd.0 as usize) == osk_hwnd;
 
-    // 偵測輸入法系統視窗，避免在選字時頻繁觸發置頂邏輯導致閃爍
+    // 偵測輸入法系統視窗與工作切換器，避免在過渡期誤記暫態視窗
     let fg_class = get_window_class(fg_hwnd);
     let proc_name = get_process_name(fg_hwnd).to_lowercase();
     let is_search_or_start = crate::system::window_manager::is_search_or_start_window(fg_hwnd);
+    let is_task_switcher = fg_class == "TaskSwitcherWnd"
+        || fg_class == "XamlExplorerHostIslandWindow"
+        || fg_class == "MultitaskingViewFrame"
+        || (proc_name == "explorer.exe" && fg_class == "Windows.UI.Core.CoreWindow");
+
     let is_ime_candidate = (fg_class.contains("IME")
         || fg_class.contains("Candidate")
         || fg_class == "LibImeWindow"
@@ -509,8 +545,8 @@ pub fn update_osk_state() {
         || (fg_class == "Windows.UI.Core.CoreWindow" && proc_name == "textinputhost.exe"))
         && !is_search_or_start;
 
-    // 記錄當前真正的應用程式視窗代碼
-    if !is_osk_focused && !fg_hwnd.0.is_null() && !is_ime_candidate {
+    // 記錄當前真正的應用程式視窗代碼 (排除 OSK、候選字窗、工作切換器與開始選單)
+    if !is_osk_focused && !fg_hwnd.0.is_null() && !is_ime_candidate && !is_task_switcher && !is_search_or_start {
         let fg_val = fg_hwnd.0 as usize;
         LAST_FOREGROUND_HWND.store(fg_val, Ordering::Relaxed);
     }
@@ -563,6 +599,16 @@ pub fn start_detector(window: WebviewWindow) {
     }
 
     update_osk_state();
+
+    // 專用焦點防抖工作執行緒：保證每次焦點改變 100% 被捕獲並更新，絕不遺漏
+    std::thread::spawn(|| {
+        let rx = EVENT_TRIGGER.1.lock().unwrap();
+        while let Ok(()) = rx.recv() {
+            std::thread::sleep(Duration::from_millis(35));
+            while rx.try_recv().is_ok() {}
+            update_osk_state();
+        }
+    });
 
     // 定時輪詢備援機制 (避讓中提升頻率至 200ms 以便開始選單關閉時即時恢復)
     std::thread::spawn(|| loop {
