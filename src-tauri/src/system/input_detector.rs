@@ -372,6 +372,8 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
 
         // 2. 對於非純 TSF TIP 輸入法 (例如 Weasel 小狼毫、微軟新注音等標準 IMM32/系統輸入法)
         // 優先嘗試使用 WM_IME_CONTROL 獲取狀態 (跨行程呼叫使用 30ms 超時防卡死)
+        let mut found_real_imm = false;
+
         if !is_pure_tsf_tip && !effective_ime_wnd.0.is_null() {
             let mut res_open: usize = 0;
             let mut res_conv: usize = 0;
@@ -404,9 +406,9 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
             // - is_target_imm_confirmed 表示此視窗曾確認為 IMM32 輸入法
             // PIME 新酷音為純 TSF，其虛擬 IME 視窗永遠回傳 res_open=0，
             // 因此必須排除在 WM_IME_CONTROL 邏輯之外，直接落入 Step 4 (WINDOW_IME_MAP)
-            let is_real_imm = is_open || is_target_imm_confirmed(target_val);
+            found_real_imm = is_open || is_target_imm_confirmed(target_val);
 
-            if is_real_imm {
+            if found_real_imm {
                 // 1. 若為明確的中文模式 (微軟新注音及小狼毫中文模式均滿足 is_zh_imm)
                 let is_zh_imm = if ok_conv.0 != 0 {
                     is_open && is_native
@@ -439,12 +441,16 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
                     return false;
                 }
             }
-            // is_real_imm=false 時 (如 PIME 新酷音: res_open=0 且從未確認為 IMM32)：
-            // 直接跳過 WM_IME_CONTROL 結果，落入下方 Step 3/Step 4
+            // found_real_imm=false 時 (如 PIME 新酷音: res_open=0 且從未確認為 IMM32)：
+            // 直接跳過 WM_IME_CONTROL 結果，同時也跳過下方 Step 3
         }
 
-        // 3. 標準 IMM32 API 備援偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
-        if !is_pure_tsf_tip {
+        // 3. 標準 IMM32 API 備援偵測 (僅限已確認為 IMM32 的視窗)
+        // 對於 PIME 新酷音等純 TSF 輸入法，ImmGetContext 在 Win32 編輯控制項 (如記事本)
+        // 可能回傳有效的 HIMC，但其 ImmGetOpenStatus/ImmGetConversionStatus 的值
+        // 不反映 PIME 的實際中英文狀態，會造成誤判並污染 IMM_CONFIRMED_MAP。
+        // 因此 Step 3 僅在 Step 2 已判定為真實 IMM32 (found_real_imm) 時才執行。
+        if !is_pure_tsf_tip && found_real_imm {
             let mut imm_responded = false;
             let mut imm_zh = false;
             for &h in &[effective_ime_wnd, target_hwnd, target_top_hwnd] {
