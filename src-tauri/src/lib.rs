@@ -54,6 +54,7 @@ pub fn run() {
 
             // 初始化 OSK 視窗樣式
             setup_osk_window(&window);
+            let _ = window.show();
 
             // 初始化全域實體鍵盤掛鉤
             system::input_hook::init_global_hook(app.handle().clone());
