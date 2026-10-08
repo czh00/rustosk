@@ -37,10 +37,42 @@ lazy_static! {
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static ref LAST_FOREGROUND_HWND: AtomicUsize = AtomicUsize::new(0);
     static ref WINDOW_IME_MAP: Mutex<std::collections::HashMap<usize, bool>> = Mutex::new(std::collections::HashMap::new());
+    static ref IMM_CONFIRMED_MAP: Mutex<std::collections::HashMap<usize, bool>> = Mutex::new(std::collections::HashMap::new());
     static ref EVENT_TRIGGER: (std::sync::mpsc::Sender<()>, Mutex<std::sync::mpsc::Receiver<()>>) = {
         let (tx, rx) = std::sync::mpsc::channel();
         (tx, Mutex::new(rx))
     };
+}
+
+pub fn is_target_imm_confirmed(hwnd: usize) -> bool {
+    if hwnd == 0 {
+        return false;
+    }
+    if let Ok(map) = IMM_CONFIRMED_MAP.lock() {
+        *map.get(&hwnd).unwrap_or(&false)
+    } else {
+        false
+    }
+}
+
+pub fn mark_target_imm_confirmed(hwnd: usize) {
+    if hwnd == 0 {
+        return;
+    }
+    if let Ok(mut map) = IMM_CONFIRMED_MAP.lock() {
+        map.insert(hwnd, true);
+        if map.len() > 64 {
+            map.retain(|&h, _| unsafe {
+                windows::Win32::UI::WindowsAndMessaging::IsWindow(HWND(h as _)).as_bool()
+            });
+        }
+    }
+}
+
+pub fn clear_imm_confirmed() {
+    if let Ok(mut map) = IMM_CONFIRMED_MAP.lock() {
+        map.clear();
+    }
 }
 
 pub fn get_effective_target_hwnd() -> usize {
@@ -116,13 +148,8 @@ pub fn set_pime_mode(is_zh: bool) {
 #[tauri::command]
 pub fn toggle_ime_key() {
     let target = get_effective_target_hwnd();
-    let is_tsf = unsafe {
-        let mut pid = 0;
-        let tid = GetWindowThreadProcessId(HWND(target as _), Some(&mut pid));
-        let hkl = GetKeyboardLayout(tid);
-        (hkl.0 as usize >> 28) == 0xF
-    };
-    if is_tsf {
+    let is_imm = is_target_imm_confirmed(target);
+    if !is_imm {
         toggle_window_ime(target);
     }
 
@@ -369,17 +396,32 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
                 Some(&mut res_conv),
             );
 
-            if ok_open.0 != 0 {
-                let is_open = res_open != 0;
-                let is_native = (res_conv as u32 & IME_CMODE_NATIVE.0) != 0;
-                let is_zh = if ok_conv.0 != 0 {
-                    is_open && is_native
-                } else {
-                    is_open
-                };
-                set_window_ime(target_val, is_zh);
-                LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
-                return is_zh;
+            let is_open = ok_open.0 != 0 && res_open != 0;
+            let is_native = ok_conv.0 != 0 && ((res_conv as u32 & IME_CMODE_NATIVE.0) != 0);
+
+            // 若明確回傳中文狀態 (例如 Weasel 回傳 res_open != 0，或微軟新注音回傳 native 轉換模式)
+            if is_open || is_native {
+                mark_target_imm_confirmed(target_val);
+                set_window_ime(target_val, true);
+                LAST_ZH_STATE.store(true, Ordering::Relaxed);
+                return true;
+            }
+
+            // 若為微軟新注音英文模式 (ok_conv 成功且有數值，但 native 旗標為 0)
+            if ok_conv.0 != 0 && res_conv != 0 && !is_native {
+                mark_target_imm_confirmed(target_val);
+                set_window_ime(target_val, false);
+                LAST_ZH_STATE.store(false, Ordering::Relaxed);
+                return false;
+            }
+
+            // 若回傳 res_open == 0 && res_conv == 0：
+            // 只有在先前已確認此視窗支援 IMM32 (如 Weasel 小狼毫) 時，才能判定為英文模式；
+            // 若從未有 IMM 回應 (如 PIME 新酷音)，絕不可因虛擬視窗回傳 0 而誤判為英文模式！
+            if ok_open.0 != 0 && is_target_imm_confirmed(target_val) {
+                set_window_ime(target_val, false);
+                LAST_ZH_STATE.store(false, Ordering::Relaxed);
+                return false;
             }
         }
 
@@ -397,7 +439,7 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
                         let ok_conv = ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool();
                         let _ = ImmReleaseContext(h, himc);
 
-                        if ok_conv {
+                        if ok_conv && (conv.0 != 0 || is_open) {
                             imm_responded = true;
                             imm_zh = is_open && ((conv.0 & IME_CMODE_NATIVE.0) != 0);
                             break;
@@ -407,6 +449,7 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
             }
 
             if imm_responded {
+                mark_target_imm_confirmed(target_val);
                 set_window_ime(target_val, imm_zh);
                 LAST_ZH_STATE.store(imm_zh, Ordering::Relaxed);
                 return imm_zh;

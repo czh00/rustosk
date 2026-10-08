@@ -23,5 +23,4 @@ dist-ssr
 *.sln
 *.sw?
 *.ini
-rustosk.exe
 push-to-github.bat

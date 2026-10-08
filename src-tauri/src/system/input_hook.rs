@@ -113,6 +113,7 @@ unsafe extern "system" fn keyboard_hook_proc(
                             || (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x5C) as u16 & 0x8000 != 0)
                     };
                     if win_down {
+                        crate::system::input_detector::clear_imm_confirmed();
                         crate::system::input_detector::set_pime_mode(true);
                         std::thread::spawn(|| {
                             std::thread::sleep(std::time::Duration::from_millis(150));
@@ -128,6 +129,7 @@ unsafe extern "system" fn keyboard_hook_proc(
                     };
                     if alt_or_ctrl {
                         // Alt + Shift 或 Ctrl + Shift 切換輸入法，重設為中文模式
+                        crate::system::input_detector::clear_imm_confirmed();
                         crate::system::input_detector::set_pime_mode(true);
                         SHIFT_SOLO.store(false, Ordering::SeqCst);
                         std::thread::spawn(|| {
@@ -156,13 +158,8 @@ unsafe extern "system" fn keyboard_hook_proc(
                         let elapsed = now.saturating_sub(down_time);
                         if elapsed < 500 && crate::system::input_detector::WAS_CHINESE_LAYOUT.load(Ordering::Relaxed) {
                             let target = crate::system::input_detector::get_effective_target_hwnd();
-                            let is_tsf = unsafe {
-                                let mut pid = 0;
-                                let tid = windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(windows::Win32::Foundation::HWND(target as _), Some(&mut pid));
-                                let hkl = windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout(tid);
-                                (hkl.0 as usize >> 28) == 0xF
-                            };
-                            if is_tsf {
+                            let is_imm = crate::system::input_detector::is_target_imm_confirmed(target);
+                            if !is_imm {
                                 crate::system::input_detector::toggle_window_ime(target);
                             }
                             std::thread::spawn(|| {
