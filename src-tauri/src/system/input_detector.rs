@@ -20,8 +20,7 @@ use windows::Win32::UI::Accessibility::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::Input::Ime::{
-    ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd, ImmGetOpenStatus,
-    ImmReleaseContext, IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    ImmGetDefaultIMEWnd, IME_CMODE_NATIVE,
 };
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -37,42 +36,39 @@ lazy_static! {
     static ref LAST_ZH_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static ref LAST_FOREGROUND_HWND: AtomicUsize = AtomicUsize::new(0);
     static ref WINDOW_IME_MAP: Mutex<std::collections::HashMap<usize, bool>> = Mutex::new(std::collections::HashMap::new());
-    static ref IMM_CONFIRMED_MAP: Mutex<std::collections::HashMap<usize, bool>> = Mutex::new(std::collections::HashMap::new());
     static ref EVENT_TRIGGER: (std::sync::mpsc::Sender<()>, Mutex<std::sync::mpsc::Receiver<()>>) = {
         let (tx, rx) = std::sync::mpsc::channel();
         (tx, Mutex::new(rx))
     };
 }
 
-pub fn is_target_imm_confirmed(hwnd: usize) -> bool {
-    if hwnd == 0 {
-        return false;
-    }
-    if let Ok(map) = IMM_CONFIRMED_MAP.lock() {
-        *map.get(&hwnd).unwrap_or(&false)
-    } else {
-        false
-    }
+pub fn clear_imm_confirmed() {
+    // 保留以維持 hook 調用相容性
 }
 
-pub fn mark_target_imm_confirmed(hwnd: usize) {
-    if hwnd == 0 {
-        return;
-    }
-    if let Ok(mut map) = IMM_CONFIRMED_MAP.lock() {
-        map.insert(hwnd, true);
-        if map.len() > 64 {
-            map.retain(|&h, _| unsafe {
-                windows::Win32::UI::WindowsAndMessaging::IsWindow(HWND(h as _)).as_bool()
-            });
+pub fn is_weasel_present() -> bool {
+    unsafe {
+        let wnd = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            windows::core::w!("WeaselServer"),
+            windows::core::PCWSTR::null(),
+        );
+        if let Ok(h) = wnd {
+            if !h.0.is_null() {
+                return true;
+            }
+        }
+
+        let wnd_cand = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            windows::core::w!("WeaselCandidate"),
+            windows::core::PCWSTR::null(),
+        );
+        if let Ok(h) = wnd_cand {
+            if !h.0.is_null() {
+                return true;
+            }
         }
     }
-}
-
-pub fn clear_imm_confirmed() {
-    if let Ok(mut map) = IMM_CONFIRMED_MAP.lock() {
-        map.clear();
-    }
+    false
 }
 
 pub fn get_effective_target_hwnd() -> usize {
@@ -148,10 +144,7 @@ pub fn set_pime_mode(is_zh: bool) {
 #[tauri::command]
 pub fn toggle_ime_key() {
     let target = get_effective_target_hwnd();
-    let is_imm = is_target_imm_confirmed(target);
-    if !is_imm {
-        toggle_window_ime(target);
-    }
+    toggle_window_ime(target);
 
     crate::system::keyboard_simulator::simulate_key_native(0xA0, false);
     std::thread::spawn(move || {
@@ -360,9 +353,6 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
 
         WAS_CHINESE_LAYOUT.store(true, Ordering::Relaxed);
 
-        let hkl_val = hkl.0 as usize;
-        let is_pure_tsf_tip = (hkl_val >> 28) == 0xF;
-
         let ime_wnd = ImmGetDefaultIMEWnd(target_hwnd);
         let effective_ime_wnd = if !ime_wnd.0.is_null() {
             ime_wnd
@@ -370,11 +360,9 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
             ImmGetDefaultIMEWnd(target_top_hwnd)
         };
 
-        // 2. 對於非純 TSF TIP 輸入法 (例如 Weasel 小狼毫、微軟新注音等標準 IMM32/系統輸入法)
-        // 優先嘗試使用 WM_IME_CONTROL 獲取狀態 (跨行程呼叫使用 30ms 超時防卡死)
-        let mut found_real_imm = false;
-
-        if !is_pure_tsf_tip && !effective_ime_wnd.0.is_null() {
+        // 2. 針對標準 IMM32 輸入法 (微軟新注音、小狼毫 Weasel)
+        // 使用 WM_IME_CONTROL 進行即時硬體/系統層狀態獲取
+        if !effective_ime_wnd.0.is_null() {
             let mut res_open: usize = 0;
             let mut res_conv: usize = 0;
 
@@ -401,87 +389,34 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
             let is_open = ok_open.0 != 0 && res_open != 0;
             let is_native = ok_conv.0 != 0 && ((res_conv as u32 & IME_CMODE_NATIVE.0) != 0);
 
-            // 判定是否為真實的 IMM32 回應：
-            // - is_open=true 表示 IMM32 輸入法明確回覆「已開啟」(res_open != 0)
-            // - is_target_imm_confirmed 表示此視窗曾確認為 IMM32 輸入法
-            // PIME 新酷音為純 TSF，其虛擬 IME 視窗永遠回傳 res_open=0，
-            // 因此必須排除在 WM_IME_CONTROL 邏輯之外，直接落入 Step 4 (WINDOW_IME_MAP)
-            found_real_imm = is_open || is_target_imm_confirmed(target_val);
+            // A. 微軟新注音 (Microsoft Bopomofo)：
+            // 在微軟新注音下，無論在中文或英文模式，res_open 均不為 0 (輸入法處於作用中)，且 ok_conv 有效。
+            // 中文模式時 is_native=true，英文模式時 is_native=false。
+            if is_open && ok_conv.0 != 0 && res_conv != 0 {
+                set_window_ime(target_val, is_native);
+                LAST_ZH_STATE.store(is_native, Ordering::Relaxed);
+                return is_native;
+            }
 
-            if found_real_imm {
-                // 1. 若為明確的中文模式 (微軟新注音及小狼毫中文模式均滿足 is_zh_imm)
-                let is_zh_imm = if ok_conv.0 != 0 {
-                    is_open && is_native
-                } else {
-                    is_open
-                };
-
-                if is_zh_imm {
-                    mark_target_imm_confirmed(target_val);
+            // B. 小狼毫 (Weasel)：
+            // 小狼毫是 IMM32 輸入法，在中文模式時 res_open != 0，英文模式時 res_open == 0。
+            // 僅在明確確認系統中有小狼毫輸入法 (Weasel) 時才採用此規則，避免將純 TSF (如 PIME) 誤判為英文。
+            if is_weasel_present() {
+                if is_open {
                     set_window_ime(target_val, true);
                     LAST_ZH_STATE.store(true, Ordering::Relaxed);
                     return true;
-                }
-
-                // 2. 若為微軟新注音英文模式 (ok_conv 成功且有數值，但 native 旗標為 0)
-                if ok_conv.0 != 0 && res_conv != 0 && !is_native {
-                    if is_open {
-                        mark_target_imm_confirmed(target_val);
-                    }
-                    set_window_ime(target_val, false);
-                    LAST_ZH_STATE.store(false, Ordering::Relaxed);
-                    return false;
-                }
-
-                // 3. 已確認 IMM32 視窗但 res_open == 0：判定為英文模式
-                // (例如 Weasel 小狼毫在英文模式回傳 res_open=0)
-                if ok_open.0 != 0 && is_target_imm_confirmed(target_val) {
+                } else if ok_open.0 != 0 {
                     set_window_ime(target_val, false);
                     LAST_ZH_STATE.store(false, Ordering::Relaxed);
                     return false;
                 }
             }
-            // found_real_imm=false 時 (如 PIME 新酷音: res_open=0 且從未確認為 IMM32)：
-            // 直接跳過 WM_IME_CONTROL 結果，同時也跳過下方 Step 3
         }
 
-        // 3. 標準 IMM32 API 備援偵測 (僅限已確認為 IMM32 的視窗)
-        // 對於 PIME 新酷音等純 TSF 輸入法，ImmGetContext 在 Win32 編輯控制項 (如記事本)
-        // 可能回傳有效的 HIMC，但其 ImmGetOpenStatus/ImmGetConversionStatus 的值
-        // 不反映 PIME 的實際中英文狀態，會造成誤判並污染 IMM_CONFIRMED_MAP。
-        // 因此 Step 3 僅在 Step 2 已判定為真實 IMM32 (found_real_imm) 時才執行。
-        if !is_pure_tsf_tip && found_real_imm {
-            let mut imm_responded = false;
-            let mut imm_zh = false;
-            for &h in &[effective_ime_wnd, target_hwnd, target_top_hwnd] {
-                if !h.0.is_null() {
-                    let himc = ImmGetContext(h);
-                    if !himc.0.is_null() {
-                        let is_open = ImmGetOpenStatus(himc).as_bool();
-                        let mut conv = IME_CONVERSION_MODE(0);
-                        let mut sentence = IME_SENTENCE_MODE(0);
-                        let ok_conv = ImmGetConversionStatus(himc, Some(&mut conv), Some(&mut sentence)).as_bool();
-                        let _ = ImmReleaseContext(h, himc);
-
-                        if ok_conv && (conv.0 != 0 || is_open) {
-                            imm_responded = true;
-                            imm_zh = is_open && ((conv.0 & IME_CMODE_NATIVE.0) != 0);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if imm_responded && (imm_zh || is_target_imm_confirmed(target_val)) {
-                mark_target_imm_confirmed(target_val);
-                set_window_ime(target_val, imm_zh);
-                LAST_ZH_STATE.store(imm_zh, Ordering::Relaxed);
-                return imm_zh;
-            }
-        }
-
-        // 4. 若為純 TSF 輸入法 (如 PIME 新酷音) 或無 IMM 回應：
-        // 讀取該目標視窗各自獨立記憶的輸入法狀態；初次開啟之視窗預設為中文模式
+        // 3. 純 TSF 輸入法 (如 PIME 新酷音) 或無 IMM 回應之視窗 (LINE、記事本、Chrome、檔案總管等)：
+        // 讀取該目標視窗各自獨立記憶的輸入法狀態；初次開啟之視窗預設為中文模式。
+        // 當使用者按實體 Shift 鍵或 ㄅ/En 按鈕切換時，該視窗狀態被即時翻轉並持續保存。
         let is_zh = get_or_default_window_ime(target_val, true);
         LAST_ZH_STATE.store(is_zh, Ordering::Relaxed);
         is_zh

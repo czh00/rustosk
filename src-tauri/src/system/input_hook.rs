@@ -158,10 +158,7 @@ unsafe extern "system" fn keyboard_hook_proc(
                         let elapsed = now.saturating_sub(down_time);
                         if elapsed < 500 && crate::system::input_detector::WAS_CHINESE_LAYOUT.load(Ordering::Relaxed) {
                             let target = crate::system::input_detector::get_effective_target_hwnd();
-                            let is_imm = crate::system::input_detector::is_target_imm_confirmed(target);
-                            if !is_imm {
-                                crate::system::input_detector::toggle_window_ime(target);
-                            }
+                            crate::system::input_detector::toggle_window_ime(target);
                             std::thread::spawn(|| {
                                 std::thread::sleep(std::time::Duration::from_millis(60));
                                 crate::system::input_detector::update_osk_state();
