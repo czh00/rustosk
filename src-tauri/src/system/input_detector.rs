@@ -399,36 +399,48 @@ pub fn is_ime_active_details(_is_app_switch: bool) -> bool {
             let is_open = ok_open.0 != 0 && res_open != 0;
             let is_native = ok_conv.0 != 0 && ((res_conv as u32 & IME_CMODE_NATIVE.0) != 0);
 
-            // 1. 若為明確的中文模式 (微軟新注音及小狼毫中文模式均滿足 is_zh_imm)
-            let is_zh_imm = if ok_conv.0 != 0 {
-                is_open && is_native
-            } else {
-                is_open
-            };
+            // 判定是否為真實的 IMM32 回應：
+            // - is_open=true 表示 IMM32 輸入法明確回覆「已開啟」(res_open != 0)
+            // - is_target_imm_confirmed 表示此視窗曾確認為 IMM32 輸入法
+            // PIME 新酷音為純 TSF，其虛擬 IME 視窗永遠回傳 res_open=0，
+            // 因此必須排除在 WM_IME_CONTROL 邏輯之外，直接落入 Step 4 (WINDOW_IME_MAP)
+            let is_real_imm = is_open || is_target_imm_confirmed(target_val);
 
-            if is_zh_imm {
-                mark_target_imm_confirmed(target_val);
-                set_window_ime(target_val, true);
-                LAST_ZH_STATE.store(true, Ordering::Relaxed);
-                return true;
-            }
+            if is_real_imm {
+                // 1. 若為明確的中文模式 (微軟新注音及小狼毫中文模式均滿足 is_zh_imm)
+                let is_zh_imm = if ok_conv.0 != 0 {
+                    is_open && is_native
+                } else {
+                    is_open
+                };
 
-            // 2. 若為微軟新注音英文模式 (ok_conv 成功且有數值，但 native 旗標為 0)
-            if ok_conv.0 != 0 && res_conv != 0 && !is_native {
-                mark_target_imm_confirmed(target_val);
-                set_window_ime(target_val, false);
-                LAST_ZH_STATE.store(false, Ordering::Relaxed);
-                return false;
-            }
+                if is_zh_imm {
+                    mark_target_imm_confirmed(target_val);
+                    set_window_ime(target_val, true);
+                    LAST_ZH_STATE.store(true, Ordering::Relaxed);
+                    return true;
+                }
 
-            // 3. 若回傳 res_open == 0 && res_conv == 0：
-            // 只有在先前已確認此視窗支援 IMM32 (如 Weasel 小狼毫) 時，才能判定為英文模式；
-            // 若從未有 IMM 回應 (如 PIME 新酷音)，絕不可因虛擬視窗回傳 0 而誤判為英文模式！
-            if ok_open.0 != 0 && is_target_imm_confirmed(target_val) {
-                set_window_ime(target_val, false);
-                LAST_ZH_STATE.store(false, Ordering::Relaxed);
-                return false;
+                // 2. 若為微軟新注音英文模式 (ok_conv 成功且有數值，但 native 旗標為 0)
+                if ok_conv.0 != 0 && res_conv != 0 && !is_native {
+                    if is_open {
+                        mark_target_imm_confirmed(target_val);
+                    }
+                    set_window_ime(target_val, false);
+                    LAST_ZH_STATE.store(false, Ordering::Relaxed);
+                    return false;
+                }
+
+                // 3. 已確認 IMM32 視窗但 res_open == 0：判定為英文模式
+                // (例如 Weasel 小狼毫在英文模式回傳 res_open=0)
+                if ok_open.0 != 0 && is_target_imm_confirmed(target_val) {
+                    set_window_ime(target_val, false);
+                    LAST_ZH_STATE.store(false, Ordering::Relaxed);
+                    return false;
+                }
             }
+            // is_real_imm=false 時 (如 PIME 新酷音: res_open=0 且從未確認為 IMM32)：
+            // 直接跳過 WM_IME_CONTROL 結果，落入下方 Step 3/Step 4
         }
 
         // 3. 標準 IMM32 API 備援偵測 (支援微軟新注音及具備 IMC 轉換狀態之輸入法)
